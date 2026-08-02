@@ -3,10 +3,13 @@
 from unittest.mock import patch
 
 import pytest
+from rdflib import Graph, Namespace, URIRef
 
 from semantica.context.context_graph import ContextGraph
 from semantica.explorer.app import create_app
+from semantica.explorer.routes.ontology import _ontology_dict_from_nodes
 from semantica.explorer.session import GraphSession
+from semantica.ontology import OntologyEngine
 
 try:
     from starlette.testclient import TestClient
@@ -143,6 +146,96 @@ def test_shacl_generate_and_shapes(client):
     shapes = client.get("/api/ontology/shacl/shapes?uri=http%3A%2F%2Fexample.org%2Fonto-a")
     assert shapes.status_code == 200
     assert shapes.json()["shapes"]
+
+
+def test_shacl_generation_uses_uri_identifiers_for_spaced_labels():
+    ontology_uri = "http://example.org/onto-a"
+    base_uri = f"{ontology_uri}#"
+    person_uri = f"{base_uri}PersonRecord"
+    organization_uri = f"{base_uri}Organization"
+    display_name_uri = f"{base_uri}displayName"
+    member_of_uri = f"{base_uri}memberOf"
+    xsd_string_uri = "http://www.w3.org/2001/XMLSchema#string"
+    nodes = [
+        {
+            "id": person_uri,
+            "type": "owl:Class",
+            "properties": {"rdfs:label": "Person Record"},
+        },
+        {
+            "id": organization_uri,
+            "type": "owl:Class",
+            "properties": {"rdfs:label": "Organization"},
+        },
+        {
+            "id": display_name_uri,
+            "type": "owl:DatatypeProperty",
+            "properties": {"rdfs:label": "Display Name"},
+        },
+        {
+            "id": member_of_uri,
+            "type": "owl:ObjectProperty",
+            "properties": {"rdfs:label": "Member Of"},
+        },
+    ]
+    edges = [
+        {
+            "source": display_name_uri,
+            "target": person_uri,
+            "type": "rdfs:domain",
+        },
+        {
+            "source": display_name_uri,
+            "target": xsd_string_uri,
+            "type": "rdfs:range",
+        },
+        {
+            "source": member_of_uri,
+            "target": person_uri,
+            "type": "rdfs:domain",
+        },
+        {
+            "source": member_of_uri,
+            "target": organization_uri,
+            "type": "rdfs:range",
+        },
+    ]
+
+    ontology = _ontology_dict_from_nodes(
+        ontology_uri,
+        "Ontology A",
+        nodes,
+        edges,
+    )
+    assert ontology["namespace"] == {"base_uri": base_uri}
+    assert [item["name"] for item in ontology["classes"]] == [
+        "PersonRecord",
+        "Organization",
+    ]
+    properties = {
+        item["uri"]: item for item in ontology["properties"]
+    }
+    assert properties[display_name_uri]["name"] == "displayName"
+    assert properties[display_name_uri]["domain"] == ["PersonRecord"]
+    assert properties[display_name_uri]["range"] == ["string"]
+    assert properties[member_of_uri]["name"] == "memberOf"
+    assert properties[member_of_uri]["domain"] == ["PersonRecord"]
+    assert properties[member_of_uri]["range"] == ["Organization"]
+
+    shacl_turtle = OntologyEngine().to_shacl(ontology)
+    graph = Graph()
+    graph.parse(data=shacl_turtle, format="turtle")
+    shacl = Namespace("http://www.w3.org/ns/shacl#")
+    person_shape = next(
+        graph.subjects(shacl.targetClass, URIRef(person_uri))
+    )
+    property_shapes = list(graph.objects(person_shape, shacl.property))
+    paths = {
+        graph.value(property_shape, shacl.path)
+        for property_shape in property_shapes
+    }
+    assert URIRef(display_name_uri) in paths
+    assert URIRef(member_of_uri) in paths
 
 
 def test_shacl_validate_returns_unavailable(client):

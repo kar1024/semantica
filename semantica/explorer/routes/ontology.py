@@ -84,6 +84,8 @@ _URI_PREFIX_MAP = {
     "http://www.w3.org/ns/shacl#": "sh:",
 }
 
+_XSD_NAMESPACE = "http://www.w3.org/2001/XMLSchema#"
+
 _FORMAT_ALIASES: Dict[str, str] = {
     "ttl": "turtle",
     "rdf": "xml",
@@ -882,20 +884,30 @@ def _data_graph_entities(nodes: List[Dict[str, Any]], ontology_uri: Optional[str
 
 
 def _ontology_dict_from_nodes(uri: str, name: str, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> Dict[str, Any]:
+    namespace = _ontology_namespace(uri)
+    ontology_stem = uri.rstrip("#/")
+
+    def map_ontology_identifier(identifier: str) -> str:
+        if identifier.startswith((ontology_stem + "#", ontology_stem + "/")):
+            return _label_from_uri(identifier)
+        return identifier
+
     classes = []
     properties = []
     for node in nodes:
         entity_type = _classify_node_type(node.get("type", ""))
+        node_uri = node.get("id", "")
         label = _node_label(node) or node.get("id", "")
         item = {
-            "name": label,
-            "uri": node.get("id", ""),
+            "name": _label_from_uri(node_uri),
+            "uri": node_uri,
             "label": label,
             "description": _entity_description(node) or "",
         }
         if entity_type == "class":
             classes.append(item)
         elif entity_type == "property":
+            property_type = "object" if "ObjectProperty" in node.get("type", "") else "datatype"
             domain = [
                 edge.get("target", "")
                 for edge in edges
@@ -906,8 +918,17 @@ def _ontology_dict_from_nodes(uri: str, name: str, nodes: List[Dict[str, Any]], 
                 for edge in edges
                 if edge.get("source") == node.get("id") and edge.get("type") == "rdfs:range"
             ]
+            domain = [map_ontology_identifier(value) for value in domain]
+            range_ = [
+                (
+                    _label_from_uri(value)
+                    if property_type == "datatype" and value.startswith(_XSD_NAMESPACE)
+                    else map_ontology_identifier(value)
+                )
+                for value in range_
+            ]
             item.update({
-                "type": "object" if "ObjectProperty" in node.get("type", "") else "datatype",
+                "type": property_type,
                 "domain": domain,
                 "range": range_,
                 "required": False,
@@ -916,7 +937,7 @@ def _ontology_dict_from_nodes(uri: str, name: str, nodes: List[Dict[str, Any]], 
 
     return {
         "name": name,
-        "namespace": _ontology_namespace(uri),
+        "namespace": {"base_uri": namespace},
         "classes": classes,
         "properties": properties,
     }
