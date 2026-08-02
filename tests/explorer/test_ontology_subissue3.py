@@ -1,6 +1,6 @@
 """Tests for Ontology Hub subissue 3 APIs."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rdflib import Graph, Namespace, URIRef
@@ -131,6 +131,29 @@ def test_health_returns_dimensions_and_issues(client):
         "documentation",
     }
     assert isinstance(payload["issues"], list)
+
+
+def test_health_returns_structured_shacl_results(client):
+    report = MagicMock()
+    report.conforms = False
+    report.violation_count = 3
+    report.warnings = ["warning-1", "warning-2"]
+    with patch.object(
+        OntologyEngine,
+        "validate_graph",
+        return_value=report,
+    ):
+        response = client.get(
+            "/api/ontology/health?uri=http%3A%2F%2Fexample.org%2Fonto-a"
+        )
+    assert response.status_code == 200
+    shacl = next(
+        item for item in response.json()["dimensions"]
+        if item["key"] == "shacl"
+    )
+    assert shacl["conforms"] is False
+    assert shacl["violation_count"] == 3
+    assert shacl["warning_count"] == 2
 
 
 def test_shacl_generate_and_shapes(client):

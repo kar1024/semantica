@@ -352,6 +352,9 @@ class HealthDimension(BaseModel):
     score: float = Field(ge=0.0, le=100.0)
     status: Literal["ok", "warning", "critical", "unavailable"] = "ok"
     detail: str
+    conforms: Optional[bool] = None
+    violation_count: Optional[int] = Field(default=None, ge=0)
+    warning_count: Optional[int] = Field(default=None, ge=0)
 
 
 class HealthIssue(BaseModel):
@@ -2273,6 +2276,9 @@ async def ontology_health(
             score=round(shacl_score, 1),
             status=shacl_status,
             detail=shacl_detail,
+            conforms=report.conforms,
+            violation_count=report.violation_count,
+            warning_count=warning_count,
         )
     except GraphTruncationError as exc:
         shacl_dimension = HealthDimension(
