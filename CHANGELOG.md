@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - [Claude] - 2026-08-02
+
+- A source-aware ontology authoring workspace for canonical UO terms, including
+  definition review, structured OWL/SKOS editing, proposal approval, exact Git
+  summaries, publish requests, and result receipts.
+- One canonical UO document with local-only reference ontologies for browsing
+  and mapping; Hindsight and OpenViking remain evidence sources, while
+  Obsidian, FileClasses, and classifiers remain consumers.
+
 ### Added
 
 - **Altair Anzo triplet store backend** (#813) by @KaifAhmad1

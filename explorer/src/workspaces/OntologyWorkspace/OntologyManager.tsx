@@ -32,6 +32,7 @@ interface OntologyEntry {
   loaded_at: string;
   enabled: boolean;
   tags: string[];
+  managed_by_authoring?: boolean;
 }
 
 type RightPanel = "none" | "search" | "skos";
@@ -187,6 +188,10 @@ function RegistryRow({
       </div>
 
       <div style={rowActionsStyle}>
+        {entry.managed_by_authoring ? (
+          <span style={disabledBadgeStyle}>Managed in Author</span>
+        ) : (
+          <>
         <button
           title={entry.enabled ? "Disable" : "Enable"}
           onClick={handleToggle}
@@ -229,6 +234,8 @@ function RegistryRow({
             <Trash2 size={13} />
           )}
         </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -317,7 +324,7 @@ export function OntologyManager() {
     } catch {
       flashMsg("err", "Could not toggle ontology");
     }
-  }, []);
+  }, [flashMsg]);
 
   const handleRefresh = useCallback(async (uri: string) => {
     try {
@@ -330,7 +337,7 @@ export function OntologyManager() {
     } catch {
       flashMsg("err", "Refresh failed — check source URL");
     }
-  }, [fetchRegistry]);
+  }, [fetchRegistry, flashMsg]);
 
   const handleRemove = useCallback(async (uri: string) => {
     try {
@@ -344,7 +351,7 @@ export function OntologyManager() {
     } catch {
       flashMsg("err", "Could not remove ontology");
     }
-  }, [selectedEntry]);
+  }, [selectedEntry, flashMsg]);
 
   const handleSelect = (entry: OntologyEntry) => {
     setSelectedEntry((prev) => (prev?.uri === entry.uri ? null : entry));

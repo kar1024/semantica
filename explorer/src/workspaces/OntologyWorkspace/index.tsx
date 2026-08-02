@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  BookMarked,
-  GitMerge,
   HeartPulse,
   Layers,
   Shield,
@@ -24,11 +22,9 @@ export type OntologyHubTab =
 
 const TAB_PARAM = "ontologyTab";
 
-const TABS: { id: OntologyHubTab; label: string; icon: typeof GitMerge }[] = [
-  { id: "registry", label: "Registry", icon: BookMarked },
-  { id: "editor", label: "Editor", icon: Sliders },
-  { id: "versions", label: "Versions", icon: Layers },
-  { id: "alignments", label: "Alignments", icon: GitMerge },
+const TABS: { id: OntologyHubTab; label: string; icon: typeof Sliders }[] = [
+  { id: "editor", label: "Author", icon: Sliders },
+  { id: "versions", label: "Proposals", icon: Layers },
   { id: "health", label: "Health", icon: HeartPulse },
   { id: "shacl", label: "SHACL", icon: Shield },
 ];
@@ -41,7 +37,7 @@ function readTabParam(): OntologyHubTab {
   } catch {
     // ignore
   }
-  return "registry";
+  return "editor";
 }
 
 function writeTabParam(tab: OntologyHubTab) {
@@ -82,7 +78,7 @@ export function OntologyWorkspace({ onJumpToGraphNode }: OntologyWorkspaceProps)
       case "registry":
         return <OntologyManager />;
       case "editor":
-        return <OntologyEditor />;
+        return <OntologyEditor onJumpToGraphNode={onJumpToGraphNode} onOpenProposals={() => setActiveTab("versions")} />;
       case "versions":
         return <VersionsTab />;
       case "alignments":
@@ -116,4 +112,3 @@ export function OntologyWorkspace({ onJumpToGraphNode }: OntologyWorkspaceProps)
     </div>
   );
 }
-

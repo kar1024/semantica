@@ -1,15 +1,26 @@
 import type {
   AlignmentRelation,
   AlignmentSuggestion,
+  AuthoringConfig,
+  AuthoringProposal,
+  CreateProposalRequest,
+  DefinitionQueuePage,
+  EntityPage,
   OntologyAlignment,
   OntologyEntry,
   OntologyHealthResponse,
+  OntologyTermDetail,
+  OntologyTermKind,
+  ProposalListResponse,
+  ProposalState,
   ShaclGenerateResponse,
   ShaclShapesResponse,
   ShaclValidationResponse,
 } from "./types";
 
-async function parseResponse<T>(response: Response): Promise<T> {
+const AUTHORING_API = "/api/ontology/authoring";
+
+export async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let detail = `Request failed with status ${response.status}`;
     try {
@@ -21,10 +32,118 @@ async function parseResponse<T>(response: Response): Promise<T> {
     throw new Error(detail);
   }
   const data = await response.json();
-  if (response.status === 207) {
-    console.warn("Partial Success:", data.message || "Warning: 207 Multi-Status");
-  }
   return data as T;
+}
+
+async function loadAllPages<T>(
+  fetchPage: (cursor: string | null) => Promise<{ items: T[]; next_cursor: string | null }>,
+): Promise<T[]> {
+  const items: T[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await fetchPage(cursor);
+    items.push(...page.items);
+    cursor = page.next_cursor;
+    if (cursor && seenCursors.has(cursor)) {
+      throw new Error("The authoring API returned a repeated pagination cursor.");
+    }
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+  return items;
+}
+
+export async function loadAuthoringConfig(signal?: AbortSignal): Promise<AuthoringConfig> {
+  return parseResponse<AuthoringConfig>(await fetch(`${AUTHORING_API}/config`, { signal }));
+}
+
+export async function loadAuthoringEntities(options: {
+  documentId: string;
+  query?: string;
+  kind?: OntologyTermKind;
+  deprecated?: boolean;
+  signal?: AbortSignal;
+}) {
+  return loadAllPages(async (cursor) => {
+    const params = new URLSearchParams({ document_id: options.documentId });
+    if (options.query) params.set("q", options.query);
+    if (options.kind) params.set("kind", options.kind);
+    if (options.deprecated !== undefined) params.set("deprecated", String(options.deprecated));
+    if (cursor) params.set("cursor", cursor);
+    return parseResponse<EntityPage>(
+      await fetch(`${AUTHORING_API}/entities?${params.toString()}`, { signal: options.signal }),
+    );
+  });
+}
+
+export async function loadDefinitionQueue(documentId: string, signal?: AbortSignal) {
+  return loadAllPages(async (cursor) => {
+    const params = new URLSearchParams({ document_id: documentId });
+    if (cursor) params.set("cursor", cursor);
+    return parseResponse<DefinitionQueuePage>(
+      await fetch(`${AUTHORING_API}/definition-queue?${params.toString()}`, { signal }),
+    );
+  });
+}
+
+export async function loadAuthoringEntity(
+  documentId: string,
+  termIri: string,
+  signal?: AbortSignal,
+): Promise<OntologyTermDetail> {
+  const params = new URLSearchParams({ document_id: documentId });
+  return parseResponse<OntologyTermDetail>(
+    await fetch(`${AUTHORING_API}/entities/${encodeURIComponent(termIri)}?${params.toString()}`, { signal }),
+  );
+}
+
+export async function loadAuthoringProposals(options: {
+  documentId?: string;
+  state?: ProposalState;
+  signal?: AbortSignal;
+} = {}) {
+  return loadAllPages(async (cursor) => {
+    const params = new URLSearchParams();
+    if (options.documentId) params.set("document_id", options.documentId);
+    if (options.state) params.set("state", options.state);
+    if (cursor) params.set("cursor", cursor);
+    const query = params.size ? `?${params.toString()}` : "";
+    return parseResponse<ProposalListResponse>(
+      await fetch(`${AUTHORING_API}/proposals${query}`, { signal: options.signal }),
+    );
+  });
+}
+
+export async function loadAuthoringProposal(
+  proposalId: string,
+  signal?: AbortSignal,
+): Promise<AuthoringProposal> {
+  return parseResponse<AuthoringProposal>(
+    await fetch(`${AUTHORING_API}/proposals/${encodeURIComponent(proposalId)}`, { signal }),
+  );
+}
+
+export async function createAuthoringProposal(
+  payload: CreateProposalRequest,
+): Promise<AuthoringProposal> {
+  return parseResponse<AuthoringProposal>(
+    await fetch(`${AUTHORING_API}/proposals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export async function runProposalAction(
+  proposalId: string,
+  action: "submit" | "approve" | "reject" | "publish",
+): Promise<AuthoringProposal> {
+  return parseResponse<AuthoringProposal>(
+    await fetch(`${AUTHORING_API}/proposals/${encodeURIComponent(proposalId)}/${action}`, {
+      method: "POST",
+    }),
+  );
 }
 
 export async function loadOntologyRegistry(): Promise<OntologyEntry[]> {

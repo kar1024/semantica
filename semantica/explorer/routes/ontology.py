@@ -167,6 +167,7 @@ class OntologyEntry(BaseModel):
     property_count: int = 0
     loaded_at: str = ""
     enabled: bool = True
+    managed_by_authoring: bool = False
     tags: List[str] = Field(default_factory=list)
 
 
@@ -532,6 +533,29 @@ def _get_registry(request: Request) -> Dict[str, OntologyEntry]:
     if not hasattr(request.app.state, "ontology_registry"):
         request.app.state.ontology_registry = {}
     return request.app.state.ontology_registry
+
+
+def _reject_managed_registry_mutation(
+    registry: Dict[str, OntologyEntry], ontology_uri: str, action: str
+) -> None:
+    entry = registry.get(ontology_uri)
+    if entry is not None and getattr(entry, "managed_by_authoring", False):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ontology {ontology_uri} is managed by source-backed authoring and cannot be {action} through legacy ontology routes.",
+        )
+
+
+def _reject_legacy_authoring_when_managed(
+    registry: Dict[str, OntologyEntry],
+) -> None:
+    if any(
+        getattr(entry, "managed_by_authoring", False) for entry in registry.values()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Legacy ontology draft, propose, and publish routes are disabled while source-backed authoring is configured.",
+        )
 
 
 def _get_alignment_store(request: Request) -> Dict[str, OntologyAlignment]:
@@ -1297,17 +1321,19 @@ async def load_ontology(
                 _convert_ontology_to_graph,
                 ontology_data.data
             )
-            
+
+            registry = _get_registry(request)
+            ontology_uri = ontology_data.data.get("uri", f"temp:{uuid.uuid4().hex[:12]}")
+            _reject_managed_registry_mutation(registry, ontology_uri, "overwritten")
+
             try:
                 nodes_added, edges_added = await asyncio.to_thread(
                     session.add_nodes_and_edges, nodes, edges
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            
+
             # Register in registry
-            registry = _get_registry(request)
-            ontology_uri = ontology_data.data.get("uri", f"temp:{uuid.uuid4().hex[:12]}")
             registry[ontology_uri] = OntologyEntry(
                 uri=ontology_uri,
                 name=ontology_data.data.get("name", "Imported Ontology"),
@@ -1356,6 +1382,10 @@ async def load_ontology(
         raise HTTPException(status_code=422, detail=f"Could not parse ontology: {exc}") from exc
 
     # Fallback path - use basic parsing
+    registry = _get_registry(request)
+    ontology_uri = metadata.get("uri", f"temp:{uuid.uuid4().hex[:12]}")
+    _reject_managed_registry_mutation(registry, ontology_uri, "overwritten")
+
     try:
         nodes_added, edges_added = await asyncio.to_thread(
             session.add_nodes_and_edges, nodes, edges
@@ -1363,8 +1393,6 @@ async def load_ontology(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    registry = _get_registry(request)
-    ontology_uri = metadata.get("uri", f"temp:{uuid.uuid4().hex[:12]}")
     registry[ontology_uri] = OntologyEntry(
         uri=ontology_uri,
         name=metadata.get("name", "Imported Ontology"),
@@ -1399,6 +1427,8 @@ async def create_ontology(
     """Create ontology from scratch, sample data, or text using OntologyEngine."""
     ns = body.namespace.rstrip("/#")
     onto_uri = f"{ns}#ontology"
+    registry = _get_registry(request)
+    _reject_managed_registry_mutation(registry, onto_uri, "overwritten")
     
     # Initialize OntologyEngine with session's graph store
     engine_config = {"store": session.graph.store if hasattr(session.graph, "store") else None}
@@ -1565,7 +1595,6 @@ async def create_ontology(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    registry = _get_registry(request)
     registry[onto_uri] = OntologyEntry(
         uri=onto_uri,
         name=body.name,
@@ -2731,6 +2760,7 @@ async def remove_ontology(ontology_uri: str, request: Request):
     registry = _get_registry(request)
     if ontology_uri not in registry:
         raise HTTPException(status_code=404, detail="Ontology not found in registry.")
+    _reject_managed_registry_mutation(registry, ontology_uri, "removed")
     del registry[ontology_uri]
     return {"status": "removed", "uri": ontology_uri}
 
@@ -2740,6 +2770,7 @@ async def toggle_ontology(ontology_uri: str, request: Request):
     registry = _get_registry(request)
     if ontology_uri not in registry:
         raise HTTPException(status_code=404, detail="Ontology not found in registry.")
+    _reject_managed_registry_mutation(registry, ontology_uri, "toggled")
     entry = registry[ontology_uri]
     entry.enabled = not entry.enabled
     return ToggleResponse(uri=ontology_uri, enabled=entry.enabled)
@@ -2754,6 +2785,7 @@ async def refresh_ontology(
     registry = _get_registry(request)
     if ontology_uri not in registry:
         raise HTTPException(status_code=404, detail="Ontology not found in registry.")
+    _reject_managed_registry_mutation(registry, ontology_uri, "refreshed")
     entry = registry[ontology_uri]
     if not entry.source_url:
         raise HTTPException(status_code=422, detail="No source URL to refresh from.")
@@ -2787,6 +2819,9 @@ async def save_draft(
     body: DraftRequest,
 ):
     """Stage editor diffs as a draft with ChangeLogEntry metadata."""
+    registry = _get_registry(request)
+    _reject_legacy_authoring_when_managed(registry)
+
     drafts = _get_drafts(request)
     draft_id = f"draft_{uuid.uuid4().hex[:12]}"
     now = datetime.now(UTC).isoformat()
@@ -2848,6 +2883,9 @@ async def submit_proposal(
     session: GraphSession = Depends(get_session),
 ):
     """Submit a change proposal with impact analysis and SHACL pre-validation."""
+    registry = _get_registry(request)
+    _reject_legacy_authoring_when_managed(registry)
+
     drafts = _get_drafts(request)
     proposals = _get_proposals(request)
 
@@ -3041,6 +3079,9 @@ async def publish_proposal(
     session: GraphSession = Depends(get_session),
 ):
     """Publish an approved proposal using VersionManager.create_version()."""
+    registry = _get_registry(request)
+    _reject_legacy_authoring_when_managed(registry)
+
     proposals = _get_proposals(request)
     if proposal_id not in proposals:
         raise HTTPException(status_code=404, detail="Proposal not found.")

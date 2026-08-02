@@ -1,428 +1,275 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  GitMerge,
-  CheckCircle,
-  XCircle,
-  AlertCircle,
-  Send,
-  MessageSquare,
-  User,
-  Clock,
-  Plus,
-  Minus,
-  Edit,
-} from "lucide-react";
+import React, { useCallback, useEffect, useState } from "react";
+import { CheckCircle, ExternalLink, Loader2, RefreshCw, Send, XCircle } from "lucide-react";
+import { loadAuthoringProposal, runProposalAction } from "./api";
+import { shortIri } from "./authoringModel";
+import type { AuthoringProposal, ProposalReceipt, ProposalTermDiff, RdfAssertion } from "./types";
 
-interface Proposal {
-  proposal_id: string;
-  draft_id: string;
-  ontology_uri: string;
-  summary: string;
-  author: string;
-  reviewer: string | null;
-  state: "draft" | "proposed" | "approved" | "published" | "rejected";
-  impact_analysis: Record<string, any>;
-  shacl_validation: Record<string, any>;
-  created_at: string;
-  updated_at: string;
-  comments: Record<string, any>[];
+interface ProposalReviewProps {
+  proposalId: string;
+  onChanged?: (proposal: AuthoringProposal) => void;
 }
 
-interface DiffChange {
-  type: "added" | "removed" | "modified";
-  element: string;
-  details?: Record<string, any>;
+const sectionStyle: React.CSSProperties = {
+  padding: "14px 16px",
+  borderBottom: "1px solid rgba(127,208,255,0.08)",
+};
+
+const buttonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+  padding: "7px 11px",
+  borderRadius: 7,
+  border: "1px solid rgba(127,208,255,0.2)",
+  background: "rgba(74,163,255,0.1)",
+  color: "#ebf3ff",
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "The request failed.";
 }
 
-export function ProposalReview({ proposalId }: { proposalId: string }) {
-  const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [diff, setDiff] = useState<DiffChange[]>([]);
-  const [selectedElement, setSelectedElement] = useState<string | null>(null);
-  const [commentText, setCommentText] = useState("");
+function objectText(assertion: RdfAssertion): string {
+  const object = assertion.object;
+  if (object.term_type === "iri") return `<${object.value}>`;
+  const suffix = object.language ? `@${object.language}` : object.datatype ? `^^<${object.datatype}>` : "";
+  return `"${object.value}"${suffix}`;
+}
 
-  const generateDiff = useCallback((prop: Proposal) => {
-    const changes: DiffChange[] = [];
+function AssertionList({ assertions, emptyLabel }: { assertions: RdfAssertion[]; emptyLabel: string }) {
+  if (!assertions.length) return <div style={{ color: "#5f7892", fontSize: 10 }}>{emptyLabel}</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {assertions.map((assertion, index) => (
+        <div key={`${assertion.subject}-${assertion.predicate}-${index}`} style={{ padding: 8, borderRadius: 7, border: "1px solid rgba(127,208,255,0.08)", background: "rgba(0,0,0,0.14)" }}>
+          <code style={{ display: "block", color: "#6f88a1", fontSize: 9, overflowWrap: "anywhere" }}>{assertion.subject}</code>
+          <code style={{ display: "block", color: "#7fd0ff", fontSize: 9, marginTop: 3, overflowWrap: "anywhere" }}>{assertion.predicate}</code>
+          <code style={{ display: "block", color: "#c6d4e3", fontSize: 9, marginTop: 3, overflowWrap: "anywhere" }}>{objectText(assertion)}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-    // Generate diff from impact analysis
-    if (prop.impact_analysis) {
-      if (prop.impact_analysis.class_adds > 0) {
-        changes.push({ type: "added", element: `Classes (${prop.impact_analysis.class_adds})` });
-      }
-      if (prop.impact_analysis.class_removals > 0) {
-        changes.push({ type: "removed", element: `Classes (${prop.impact_analysis.class_removals})` });
-      }
-      if (prop.impact_analysis.property_changes > 0) {
-        changes.push({ type: "modified", element: `Properties (${prop.impact_analysis.property_changes})` });
-      }
-      if (prop.impact_analysis.restriction_changes > 0) {
-        changes.push({ type: "modified", element: `Restrictions (${prop.impact_analysis.restriction_changes})` });
-      }
-    }
+function TermDiff({ diff }: { diff: ProposalTermDiff }) {
+  return (
+    <details open style={{ border: "1px solid rgba(127,208,255,0.1)", borderRadius: 9, overflow: "hidden" }}>
+      <summary style={{ padding: "10px 12px", cursor: "pointer", color: "#ebf3ff", fontSize: 12, fontWeight: 800, background: "rgba(74,163,255,0.05)" }}>
+        {shortIri(diff.term_iri)} · {diff.term_kind}
+      </summary>
+      <div style={{ padding: 10 }}>
+        <code style={{ display: "block", color: "#6f88a1", fontSize: 9, marginBottom: 9, overflowWrap: "anywhere" }}>{diff.term_iri}</code>
+        <code style={{ display: "block", color: "#526b83", fontSize: 9, marginBottom: 9, overflowWrap: "anywhere" }}>{diff.source_file}</code>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10 }}>
+          <div>
+            <div style={{ color: "#ffb4c2", fontSize: 10, fontWeight: 900, textTransform: "uppercase", marginBottom: 6 }}>Before</div>
+            <AssertionList assertions={diff.before_assertions} emptyLabel="New term; there are no prior assertions." />
+          </div>
+          <div>
+            <div style={{ color: "#9ee8d7", fontSize: 10, fontWeight: 900, textTransform: "uppercase", marginBottom: 6 }}>After</div>
+            <AssertionList assertions={diff.after_assertions} emptyLabel="No assertions remain." />
+          </div>
+        </div>
+      </div>
+    </details>
+  );
+}
 
-    setDiff(changes);
-  }, []);
+export function ProposalReceiptDetails({ receipt }: { receipt: ProposalReceipt }) {
+  return (
+    <div style={{ ...sectionStyle, background: receipt.state === "published" ? "rgba(76,195,138,0.06)" : "rgba(255,157,175,0.06)" }}>
+      <strong style={{ color: receipt.state === "published" ? "#9ee8d7" : "#ffb4c2", fontSize: 11 }}>
+        Publish result · {receipt.state}
+      </strong>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 10, marginTop: 9 }}>
+        <div>
+          <div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Commit SHA</div>
+          <code style={{ fontSize: 9, overflowWrap: "anywhere" }}>{receipt.commit_sha ?? "—"}</code>
+        </div>
+        <div>
+          <div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Pushed</div>
+          <code style={{ fontSize: 9 }}>{String(receipt.pushed)}</code>
+        </div>
+        <div>
+          <div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Completed at</div>
+          <code style={{ fontSize: 9, overflowWrap: "anywhere" }}>{receipt.completed_at}</code>
+        </div>
+        <div>
+          <div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Message</div>
+          <span style={{ display: "block", color: "#c6d4e3", fontSize: 10, overflowWrap: "anywhere" }}>{receipt.message ?? "—"}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  const loadProposal = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/ontology/proposals/${proposalId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setProposal(data);
-        generateDiff(data);
-      }
-    } catch (error) {
-      console.error("Failed to load proposal:", error);
-    }
-  }, [proposalId, generateDiff]);
+export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
+  const [proposal, setProposal] = useState<AuthoringProposal | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    let ignore = false;
-    async function fetchInitial() {
-      try {
-        const response = await fetch(`/api/ontology/proposals/${proposalId}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (!ignore) {
-            setProposal(data);
-            generateDiff(data);
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load proposal:", error);
-      }
-    }
-    void fetchInitial();
-    return () => { ignore = true; };
-  }, [proposalId, generateDiff]);
-
-  const addComment = useCallback(async () => {
-    if (!selectedElement || !commentText || !proposal) return;
-    try {
-      const response = await fetch(`/api/ontology/proposals/${proposal.proposal_id}/comment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          element_uri: selectedElement,
-          text: commentText,
-          author: "user",
-        }),
+    const controller = new AbortController();
+    loadAuthoringProposal(proposalId, controller.signal)
+      .then((loaded) => {
+        setProposal(loaded);
+        setError("");
+      })
+      .catch((requestError: unknown) => {
+        if (!controller.signal.aborted) setError(errorMessage(requestError));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
-      if (response.ok) {
-        setCommentText("");
-        loadProposal();
-      }
-    } catch (error) {
-      console.error("Failed to add comment:", error);
-      alert("Failed to add comment");
-    }
-  }, [selectedElement, commentText, proposal, loadProposal]);
+    return () => controller.abort();
+  }, [proposalId]);
 
-  const approveProposal = useCallback(async () => {
+  const act = useCallback(async (action: "submit" | "approve" | "reject" | "publish") => {
     if (!proposal) return;
+    setActing(true);
+    setError("");
     try {
-      const response = await fetch(`/api/ontology/proposals/${proposal.proposal_id}/approve`, {
-        method: "POST",
-      });
-      if (response.ok) {
-        alert("Proposal approved");
-        loadProposal();
-      }
-    } catch (error) {
-      console.error("Failed to approve proposal:", error);
-      alert("Failed to approve proposal");
+      const updated = await runProposalAction(proposal.proposal_id, action);
+      setProposal(updated);
+      onChanged?.(updated);
+    } catch (requestError: unknown) {
+      setError(errorMessage(requestError));
+    } finally {
+      setActing(false);
     }
-  }, [proposal, loadProposal]);
+  }, [onChanged, proposal]);
 
-  const rejectProposal = useCallback(async () => {
+  const refresh = useCallback(async () => {
     if (!proposal) return;
+    setRefreshing(true);
+    setError("");
     try {
-      const response = await fetch(`/api/ontology/proposals/${proposal.proposal_id}/reject`, {
-        method: "POST",
-      });
-      if (response.ok) {
-        alert("Proposal rejected");
-        loadProposal();
-      }
-    } catch (error) {
-      console.error("Failed to reject proposal:", error);
-      alert("Failed to reject proposal");
+      const updated = await loadAuthoringProposal(proposal.proposal_id);
+      setProposal(updated);
+      onChanged?.(updated);
+    } catch (requestError: unknown) {
+      setError(errorMessage(requestError));
+    } finally {
+      setRefreshing(false);
     }
-  }, [proposal, loadProposal]);
+  }, [onChanged, proposal]);
 
-  const publishProposal = useCallback(async () => {
-    if (!proposal) return;
-    try {
-      const response = await fetch(`/api/ontology/proposals/${proposal.proposal_id}/publish`, {
-        method: "POST",
-      });
-      if (response.ok) {
-        alert("Proposal published");
-        loadProposal();
-      }
-    } catch (error) {
-      console.error("Failed to publish proposal:", error);
-      alert("Failed to publish proposal");
-    }
-  }, [proposal, loadProposal]);
-
-  const getChangeIcon = (type: string) => {
-    switch (type) {
-      case "added":
-        return <Plus size={14} color="#4cc38a" />;
-      case "removed":
-        return <Minus size={14} color="#ff6b6b" />;
-      case "modified":
-        return <Edit size={14} color="#f2b66d" />;
-      default:
-        return null;
-    }
-  };
-
-  const getStateIcon = (state: string) => {
-    switch (state) {
-      case "published":
-        return <CheckCircle size={20} color="#4cc38a" />;
-      case "approved":
-        return <CheckCircle size={20} color="#4aa3ff" />;
-      case "rejected":
-        return <XCircle size={20} color="#ff6b6b" />;
-      case "proposed":
-        return <AlertCircle size={20} color="#f2b66d" />;
-      default:
-        return <Clock size={20} color="#8fa8c6" />;
-    }
-  };
-
-  const containerStyle: React.CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    height: "100%",
-    background: "#07111f",
-    padding: "20px",
-    overflow: "auto",
-  };
-
-  const headerStyle: React.CSSProperties = {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "20px",
-    paddingBottom: "16px",
-    borderBottom: "1px solid rgba(140, 192, 255, 0.12)",
-  };
-
-  const titleStyle: React.CSSProperties = {
-    margin: 0,
-    color: "#ebf3ff",
-    fontSize: "20px",
-    fontWeight: "700",
-  };
-
-  const contentStyle: React.CSSProperties = {
-    display: "flex",
-    gap: "20px",
-    flex: 1,
-    minHeight: 0,
-  };
-
-  const diffPanelStyle: React.CSSProperties = {
-    flex: 1,
-    background: "rgba(9, 19, 34, 0.8)",
-    borderRadius: "8px",
-    border: "1px solid rgba(127, 208, 255, 0.12)",
-    padding: "16px",
-    overflow: "auto",
-  };
-
-  const commentsPanelStyle: React.CSSProperties = {
-    width: "320px",
-    background: "rgba(9, 19, 34, 0.8)",
-    borderRadius: "8px",
-    border: "1px solid rgba(127, 208, 255, 0.12)",
-    padding: "16px",
-    display: "flex",
-    flexDirection: "column",
-  };
-
-  const diffItemStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    padding: "10px 12px",
-    borderRadius: "6px",
-    background: "rgba(3, 9, 18, 0.6)",
-    marginBottom: "8px",
-    cursor: "pointer",
-    transition: "160ms ease",
-  };
-
-  const buttonStyle: React.CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    padding: "8px 14px",
-    borderRadius: "6px",
-    border: "1px solid rgba(127, 208, 255, 0.2)",
-    background: "rgba(74, 163, 255, 0.1)",
-    color: "#ebf3ff",
-    fontSize: "12px",
-    fontWeight: "600",
-    cursor: "pointer",
-    transition: "160ms ease",
-  };
-
-  const textareaStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: "6px",
-    border: "1px solid rgba(127, 208, 255, 0.2)",
-    background: "rgba(3, 9, 18, 0.8)",
-    color: "#ebf3ff",
-    fontSize: "13px",
-    resize: "vertical",
-    minHeight: "80px",
-  };
+  if (loading) {
+    return <div style={{ display: "grid", placeItems: "center", minHeight: 220 }}><Loader2 size={18} color="#4aa3ff" style={{ animation: "spin 1s linear infinite" }} /></div>;
+  }
 
   if (!proposal) {
-    return (
-      <div style={containerStyle}>
-        <div style={{ color: "#8fa8c6", fontSize: "14px" }}>Loading proposal...</div>
-      </div>
-    );
+    return <div role="alert" style={{ padding: 16, color: "#ffb4c2", fontSize: 12 }}>{error || "Proposal not found."}</div>;
   }
 
   return (
-    <div style={containerStyle}>
-      <div style={headerStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {getStateIcon(proposal.state)}
-          <div>
-            <h1 style={titleStyle}>{proposal.summary}</h1>
-            <div style={{ color: "#8fa8c6", fontSize: "12px", marginTop: "4px" }}>
-              {proposal.author} • {new Date(proposal.created_at).toLocaleString()}
-            </div>
+    <div style={{ minHeight: 0, color: "#ebf3ff" }}>
+      <div style={{ ...sectionStyle, display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 16 }}>{proposal.summary}</h2>
+          <div style={{ marginTop: 5, color: "#6f88a1", fontSize: 10 }}>
+            {proposal.state} · {proposal.author} · {new Date(proposal.created_at).toLocaleString()}
           </div>
+          <code style={{ display: "block", marginTop: 5, color: "#526b83", fontSize: 9, overflowWrap: "anywhere" }}>{proposal.proposal_id}</code>
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
-          {proposal.state === "proposed" && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {proposal.state === "draft" ? (
+            <button type="button" disabled={acting} onClick={() => void act("submit")} style={buttonStyle}><Send size={11} /> Submit</button>
+          ) : null}
+          {proposal.state === "proposed" ? (
             <>
-              <button style={buttonStyle} onClick={approveProposal}>
-                <CheckCircle size={12} />
-                Approve
-              </button>
-              <button style={buttonStyle} onClick={rejectProposal}>
-                <XCircle size={12} />
-                Reject
-              </button>
+              <button type="button" disabled={acting} onClick={() => void act("approve")} style={buttonStyle}><CheckCircle size={11} /> Approve</button>
+              <button type="button" disabled={acting} onClick={() => void act("reject")} style={buttonStyle}><XCircle size={11} /> Reject</button>
             </>
-          )}
-          {proposal.state === "approved" && (
-            <button style={buttonStyle} onClick={publishProposal}>
-              <Send size={12} />
-              Publish
+          ) : null}
+          {proposal.state === "approved" ? (
+            <button type="button" disabled={acting} onClick={() => void act("publish")} style={buttonStyle}><Send size={11} /> Publish</button>
+          ) : null}
+          {proposal.state === "publish_requested" ? (
+            <button type="button" disabled={refreshing} onClick={() => void refresh()} style={buttonStyle}>
+              <RefreshCw size={11} /> {refreshing ? "Refreshing…" : "Refresh publish result"}
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
-      <div style={contentStyle}>
-        <div style={diffPanelStyle}>
-          <h2 style={{ margin: "0 0 16px", color: "#ebf3ff", fontSize: "14px", fontWeight: "600" }}>
-            <GitMerge size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-            Diff Viewer
-          </h2>
-          {diff.length === 0 ? (
-            <div style={{ color: "#8fa8c6", fontSize: "13px" }}>No changes detected</div>
-          ) : (
-            diff.map((change, index) => (
-              <div
-                key={index}
-                style={{
-                  ...diffItemStyle,
-                  border: selectedElement === change.element ? "1px solid rgba(74, 163, 255, 0.4)" : "1px solid transparent",
-                }}
-                onClick={() => setSelectedElement(change.element)}
-              >
-                {getChangeIcon(change.type)}
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: "#ebf3ff", fontSize: "13px", fontWeight: "600" }}>
-                    {change.element}
-                  </div>
-                  <div style={{ color: "#8fa8c6", fontSize: "11px" }}>
-                    {change.type}
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
+      {error ? <div role="alert" style={{ padding: "9px 16px", color: "#ffb4c2", background: "rgba(255,157,175,0.08)", fontSize: 11 }}>{error}</div> : null}
 
-          <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid rgba(140, 192, 255, 0.12)" }}>
-            <h3 style={{ margin: "0 0 12px", color: "#ebf3ff", fontSize: "13px", fontWeight: "600" }}>
-              Impact Analysis
-            </h3>
-            <pre style={{ background: "rgba(3, 9, 18, 0.8)", padding: "12px", borderRadius: "6px", color: "#ebf3ff", fontSize: "12px", overflow: "auto" }}>
-              {JSON.stringify(proposal.impact_analysis, null, 2)}
-            </pre>
+      {proposal.receipt ? <ProposalReceiptDetails receipt={proposal.receipt} /> : null}
+
+      <div style={{ ...sectionStyle, display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 10 }}>
+        <div><div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Document</div><code style={{ fontSize: 9, overflowWrap: "anywhere" }}>{proposal.document_id}</code></div>
+        <div><div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Base revision</div><code style={{ fontSize: 9, overflowWrap: "anywhere" }}>{proposal.base_revision_id}</code></div>
+        <div><div style={{ color: "#6f88a1", fontSize: 9, textTransform: "uppercase" }}>Term payload hash</div><code style={{ fontSize: 9, overflowWrap: "anywhere" }}>{proposal.target_payload_hash || "—"}</code></div>
+      </div>
+
+      <div style={{ ...sectionStyle, display: "flex", flexDirection: "column", gap: 9 }}>
+        <strong style={{ fontSize: 12 }}>Exact change set ({proposal.changes.length})</strong>
+        {proposal.changes.map((change, index) => (
+          <div key={`${change.operation}-${change.predicate}-${index}`} style={{ padding: 9, borderRadius: 7, background: change.operation === "add" ? "rgba(76,195,138,0.08)" : "rgba(255,107,107,0.08)", border: `1px solid ${change.operation === "add" ? "rgba(76,195,138,0.18)" : "rgba(255,107,107,0.18)"}` }}>
+            <span style={{ color: change.operation === "add" ? "#9ee8d7" : "#ffb4c2", fontSize: 9, fontWeight: 900, textTransform: "uppercase" }}>{change.operation}</span>
+            <code style={{ display: "block", color: "#6f88a1", fontSize: 9, marginTop: 3, overflowWrap: "anywhere" }}>{change.subject}</code>
+            <code style={{ display: "block", color: "#7fd0ff", fontSize: 9, marginTop: 2, overflowWrap: "anywhere" }}>{change.predicate}</code>
+            <code style={{ display: "block", color: "#c6d4e3", fontSize: 9, marginTop: 2, overflowWrap: "anywhere" }}>{objectText(change)}</code>
           </div>
+        ))}
+      </div>
 
-          <div style={{ marginTop: "16px" }}>
-            <h3 style={{ margin: "0 0 12px", color: "#ebf3ff", fontSize: "13px", fontWeight: "600" }}>
-              SHACL Validation
-            </h3>
-            <pre style={{ background: "rgba(3, 9, 18, 0.8)", padding: "12px", borderRadius: "6px", color: "#ebf3ff", fontSize: "12px", overflow: "auto" }}>
-              {JSON.stringify(proposal.shacl_validation, null, 2)}
-            </pre>
+      <div style={{ ...sectionStyle, display: "flex", flexDirection: "column", gap: 10 }}>
+        <strong style={{ fontSize: 12 }}>Before / after by term</strong>
+        {proposal.term_diffs.map((diff) => <TermDiff key={diff.term_iri} diff={diff} />)}
+      </div>
+
+      <div style={{ ...sectionStyle, display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 14 }}>
+        <div>
+          <strong style={{ fontSize: 11 }}>Evidence</strong>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {proposal.provenance_refs.length === 0 ? <span style={{ color: "#5f7892", fontSize: 10 }}>No evidence attached.</span> : null}
+            {proposal.provenance_refs.map((reference) => (
+              <a key={`${reference.label}-${reference.uri}`} href={reference.uri} target="_blank" rel="noreferrer" style={{ color: "#58a6ff", fontSize: 10, overflowWrap: "anywhere" }}><ExternalLink size={9} /> {reference.label}</a>
+            ))}
           </div>
         </div>
-
-        <div style={commentsPanelStyle}>
-          <h2 style={{ margin: "0 0 16px", color: "#ebf3ff", fontSize: "14px", fontWeight: "600" }}>
-            <MessageSquare size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-            Comments ({proposal.comments.length})
-          </h2>
-          <div style={{ flex: 1, overflow: "auto", marginBottom: "12px" }}>
-            {proposal.comments.length === 0 ? (
-              <div style={{ color: "#8fa8c6", fontSize: "13px" }}>No comments yet</div>
-            ) : (
-              proposal.comments.map((comment) => (
-                <div
-                  key={comment.id}
-                  style={{
-                    padding: "10px",
-                    background: "rgba(3, 9, 18, 0.6)",
-                    borderRadius: "6px",
-                    marginBottom: "8px",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                    <User size={12} color="#8fa8c6" />
-                    <span style={{ color: "#ebf3ff", fontSize: "12px", fontWeight: "600" }}>
-                      {comment.author}
-                    </span>
-                  </div>
-                  <div style={{ color: "#8fa8c6", fontSize: "12px", marginBottom: "4px" }}>{comment.text}</div>
-                  <div style={{ color: "#5a7a9a", fontSize: "10px" }}>
-                    {new Date(comment.created_at).toLocaleString()}
-                  </div>
-                </div>
-              ))
-            )}
+        <div>
+          <strong style={{ fontSize: 11 }}>Consumer impact (read only)</strong>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {proposal.consumer_impacts.length === 0 ? <span style={{ color: "#5f7892", fontSize: 10 }}>No known consumers reported.</span> : null}
+            {proposal.consumer_impacts.map((impact) => {
+              const content = (
+                <>
+                  <span>{impact.label} · {impact.relationship}</span>
+                  {impact.paths.map((path) => <code key={path} style={{ display: "block", color: "#6f88a1", marginTop: 2, overflowWrap: "anywhere" }}>{path}</code>)}
+                </>
+              );
+              return impact.href ? (
+                <a key={`${impact.relationship}-${impact.label}`} href={impact.href} target="_blank" rel="noreferrer" style={{ color: "#58a6ff", fontSize: 10, textDecoration: "none" }}>
+                  <ExternalLink size={9} /> {content}
+                </a>
+              ) : (
+                <div key={`${impact.relationship}-${impact.label}`} style={{ color: "#c6d4e3", fontSize: 10 }}>{content}</div>
+              );
+            })}
           </div>
-          {selectedElement && (
-            <div>
-              <textarea
-                placeholder="Add a comment..."
-                value={commentText}
-                onChange={(e) => setCommentText(e.target.value)}
-                style={textareaStyle}
-              />
-              <button style={buttonStyle} onClick={addComment} disabled={!commentText}>
-                <Send size={12} />
-                Add Comment
-              </button>
-            </div>
-          )}
         </div>
+      </div>
+
+      <div style={sectionStyle}>
+        <strong style={{ fontSize: 11 }}>Validation · {proposal.validation.status}</strong>
+        {proposal.validation.conforms !== null ? (
+          <span style={{ marginLeft: 7, color: proposal.validation.conforms ? "#9ee8d7" : "#ffb4c2", fontSize: 10 }}>
+            {proposal.validation.conforms ? "Conforms" : "Does not conform"}
+          </span>
+        ) : null}
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 7 }}>
+          {proposal.validation.messages.map((message, index) => <span key={index} style={{ color: "#8fa8c6", fontSize: 10 }}>{message}</span>)}
+        </div>
+        {proposal.handoff_id ? <div style={{ marginTop: 8, color: "#f2b66d", fontSize: 10 }}>Publish handoff: <code>{proposal.handoff_id}</code></div> : null}
       </div>
     </div>
   );

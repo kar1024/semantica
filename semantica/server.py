@@ -7,15 +7,16 @@ using FastAPI and uvicorn.
 
 import logging
 import os
-import uvicorn
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import __version__
 from .core.orchestrator import Semantica
@@ -25,6 +26,7 @@ try:
     from .context.context_graph import ContextGraph
     from .explorer.session import GraphSession
     from .explorer.ws import ConnectionManager
+
     EXPLORER_AVAILABLE = True
 except ImportError:
     EXPLORER_AVAILABLE = False
@@ -33,11 +35,12 @@ setup_logging()
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for startup and shutdown events."""
     logging.info("Starting up Semantica API...")
-    
+
     if EXPLORER_AVAILABLE:
         try:
             logging.info("Initializing Graph engine and Database connection...")
@@ -53,10 +56,17 @@ async def lifespan(app: FastAPI):
         app.state.session = None
         app.state.ws_manager = None
 
-    yield  
+    if app.state.session is not None:
+        from .explorer.routes.ontology_authoring import initialize_authoring_projection
+
+        initialize_authoring_projection(app, app.state.session)
+
+    yield
 
     logging.info("Shutting down Semantica API...")
-    if getattr(app.state, "session", None) and hasattr(app.state.session.graph, "close"):
+    if getattr(app.state, "session", None) and hasattr(
+        app.state.session.graph, "close"
+    ):
         app.state.session.graph.close()
 
 
@@ -92,7 +102,9 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["Permissions-Policy"] = (
+            "geolocation=(), microphone=(), camera=()"
+        )
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
@@ -114,6 +126,7 @@ async def _global_error_handler(request: Request, exc: Exception):
 
 framework = Semantica()
 
+
 class BuildRequest(BaseModel):
     sources: List[str]
     config: Optional[Dict[str, Any]] = None
@@ -122,23 +135,24 @@ class BuildRequest(BaseModel):
 @app.get("/api/info")
 async def root():
     """Root endpoint returning framework info."""
-    return {
-        "name": "Semantica API",
-        "version": __version__,
-        "status": "active"
-    }
+    return {"name": "Semantica API", "version": __version__, "status": "active"}
+
 
 @app.get("/health")
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
 
+
 @app.post("/build")
 async def build_kb(request: BuildRequest):
     """Initiate knowledge base construction."""
     try:
         # result = framework.build_knowledge_base(sources=request.sources, config=request.config)
-        return {"status": "accepted", "message": "Knowledge base construction initiated"}
+        return {
+            "status": "accepted",
+            "message": "Knowledge base construction initiated",
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -153,10 +167,11 @@ if EXPLORER_AVAILABLE:
             export_import,
             graph,
             ontology,
+            ontology_authoring,
+            provenance,
+            sparql,
             temporal,
             vocabulary,
-            provenance,
-            sparql
         )
 
         app.include_router(analytics.router)
@@ -166,12 +181,15 @@ if EXPLORER_AVAILABLE:
         app.include_router(export_import.router)
         app.include_router(graph.router)
         app.include_router(ontology.router)
+        app.include_router(ontology_authoring.router)
         app.include_router(temporal.router)
         app.include_router(vocabulary.router)
         app.include_router(provenance.router)
         app.include_router(sparql.router)
 
-        logging.info("Explorer, Vocabulary, SPARQL, Provenance, and Ontology API routes successfully mounted.")
+        logging.info(
+            "Explorer, Vocabulary, SPARQL, Provenance, and Ontology API routes successfully mounted."
+        )
     except Exception as exc:
         logging.error(f"Failed to mount explorer routes: {exc}")
 else:
@@ -179,6 +197,7 @@ else:
         "Explorer API routes not mounted. To enable the Knowledge Explorer, "
         "install the required dependencies: pip install 'semantica[explorer]'."
     )
+
 
 # SPA catch all
 @app.get("/{full_path:path}", include_in_schema=False)
@@ -195,13 +214,15 @@ async def serve_spa(full_path: str):
         index_file = STATIC_DIR / "index.html"
         if index_file.is_file():
             return FileResponse(index_file)
-        return JSONResponse({
-            "name": "Semantica Knowledge Explorer",
-            "version": __version__,
-            "message": "Welcome to Semantica. The frontend is not built yet — run `npm run build` inside the explorer/ directory, or open the Vite dev server at http://localhost:5173.",
-            "docs": "/docs",
-            "health": "/health",
-        })
+        return JSONResponse(
+            {
+                "name": "Semantica Knowledge Explorer",
+                "version": __version__,
+                "message": "Welcome to Semantica. The frontend is not built yet — run `npm run build` inside the explorer/ directory, or open the Vite dev server at http://localhost:5173.",
+                "docs": "/docs",
+                "health": "/health",
+            }
+        )
 
     normalized_path = os.path.normpath(full_path)
     if (
@@ -233,12 +254,14 @@ async def serve_spa(full_path: str):
 
     raise HTTPException(
         status_code=404,
-        detail="Frontend not built. Run `npm run build` in semantica-explorer/ first."
+        detail="Frontend not built. Run `npm run build` in semantica-explorer/ first.",
     )
+
 
 def main():
     """Server entry point."""
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 if __name__ == "__main__":
     main()
