@@ -91,9 +91,9 @@ export async function loadAuthoringEntity(
   termIri: string,
   signal?: AbortSignal,
 ): Promise<OntologyTermDetail> {
-  const params = new URLSearchParams({ document_id: documentId });
+  const params = new URLSearchParams({ document_id: documentId, term_iri: termIri });
   return parseResponse<OntologyTermDetail>(
-    await fetch(`${AUTHORING_API}/entities/${encodeURIComponent(termIri)}?${params.toString()}`, { signal }),
+    await fetch(`${AUTHORING_API}/entity?${params.toString()}`, { signal }),
   );
 }
 

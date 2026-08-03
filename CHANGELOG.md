@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and mapping; Hindsight and OpenViking remain evidence sources, while
   Obsidian, FileClasses, and classifiers remain consumers.
 
+### Fixed - [Claude] - 2026-08-02
+
+- Authoring entity links now pass full IRIs as query parameters so the
+  `https://` authority delimiter is preserved during detail lookup.
+
 ### Added
 
 - **Altair Anzo triplet store backend** (#813) by @KaifAhmad1

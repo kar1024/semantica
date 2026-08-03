@@ -95,14 +95,27 @@ def definition_queue(
         raise _not_found(exc) from exc
 
 
-@router.get("/entities/{term_iri:path}")
-def get_entity(request: Request, term_iri: str, document_id: str = Query(...)):
+def _get_entity(request: Request, document_id: str, term_iri: str):
     try:
         return _service(request).entity(document_id, term_iri)
     except KeyError as exc:
         raise _not_found(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/entity")
+def get_entity(
+    request: Request,
+    document_id: str = Query(...),
+    term_iri: str = Query(...),
+):
+    return _get_entity(request, document_id, term_iri)
+
+
+@router.get("/entities/{term_iri:path}")
+def get_entity_by_path(request: Request, term_iri: str, document_id: str = Query(...)):
+    return _get_entity(request, document_id, term_iri)
 
 
 @router.get("/proposals")

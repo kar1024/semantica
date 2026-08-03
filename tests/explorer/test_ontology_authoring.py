@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
 from semantica.explorer import authoring_service as authoring_service_module
@@ -185,6 +187,24 @@ def _approve(service: AuthoringService, request: ProposalCreate) -> dict[str, ob
     proposal = service.create_proposal(request)
     service.submit(proposal["proposal_id"])
     return service.approve(proposal["proposal_id"])
+
+
+def test_entity_query_preserves_full_iri(tmp_path: Path) -> None:
+    from semantica.explorer.routes.ontology_authoring import router
+
+    service = _service(tmp_path)
+    app = FastAPI()
+    app.state.ontology_authoring_service = service
+    app.include_router(router)
+
+    term_iri = f"{NAMESPACE}item"
+    response = TestClient(app).get(
+        "/api/ontology/authoring/entity",
+        params={"document_id": "uo", "term_iri": term_iri},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["term_iri"] == term_iri
 
 
 def test_documents_are_cached_and_responses_match_frontend(tmp_path: Path) -> None:

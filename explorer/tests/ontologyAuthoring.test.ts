@@ -22,6 +22,7 @@ import {
   toProposalTermPayload,
 } from "../src/workspaces/OntologyWorkspace/authoringModel.ts";
 import { ProposalReceiptDetails } from "../src/workspaces/OntologyWorkspace/ProposalReview.tsx";
+import { loadAuthoringEntity } from "../src/workspaces/OntologyWorkspace/api.ts";
 import type { ProposalReceipt, RdfAssertion } from "../src/workspaces/OntologyWorkspace/types.ts";
 
 const TERM_IRI = "https://uo.karelin.ai/ontology#TestTerm";
@@ -102,6 +103,29 @@ test("new term suffixes derive from the canonical ontology IRI", () => {
     deriveTermIri("https://uo.karelin.ai/ontology#", "classification/process"),
     "https://uo.karelin.ai/ontology#classification/process",
   );
+});
+
+test("authoring entity lookup preserves a full IRI in query parameters", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async (input) => {
+    requestedUrl = input instanceof Request ? input.url : input.toString();
+    return new Response(JSON.stringify({ term_iri: TERM_IRI }), {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    await loadAuthoringEntity("uo", TERM_IRI);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const requestUrl = new URL(requestedUrl, "https://semantica.test");
+  assert.equal(requestUrl.pathname, "/api/ontology/authoring/entity");
+  assert.equal(requestUrl.searchParams.get("document_id"), "uo");
+  assert.equal(requestUrl.searchParams.get("term_iri"), TERM_IRI);
 });
 
 test("proposal payload conversion uses backend assertion object kind and source ownership", () => {
