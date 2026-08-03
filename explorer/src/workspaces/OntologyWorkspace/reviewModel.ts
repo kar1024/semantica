@@ -2,6 +2,7 @@ import type {
   PropertyReviewItem,
   ReviewUpdateRequest,
   VocabularyReviewItem,
+  VocabularyReviewTerm,
 } from "./types";
 
 export type VocabularyReviewStatus = "unreviewed" | "keep" | "do-not-keep" | "stale";
@@ -40,6 +41,14 @@ export function propertyReviewCounts(items: PropertyReviewItem[]) {
     else counts.stale += 1;
   }
   return counts;
+}
+
+export function vocabularyDictionaryValues(terms: VocabularyReviewTerm[]) {
+  return terms.filter((term) => term.term_kind === "concept" && term.in_schemes.length > 0);
+}
+
+export function vocabularySupportingTerms(terms: VocabularyReviewTerm[]) {
+  return terms.filter((term) => term.term_kind !== "concept" || term.in_schemes.length === 0);
 }
 
 export function nextReviewItemId<T extends { item_id: string }>(

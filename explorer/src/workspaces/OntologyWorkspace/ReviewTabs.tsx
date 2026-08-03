@@ -16,9 +16,11 @@ import {
   propertyReviewCounts,
   propertyReviewRequest,
   propertyReviewStatus,
+  vocabularyDictionaryValues,
   vocabularyReviewCounts,
   vocabularyReviewRequest,
   vocabularyReviewStatus,
+  vocabularySupportingTerms,
 } from "./reviewModel";
 import type { PropertyReviewStatus, VocabularyReviewStatus } from "./reviewModel";
 import { ONTOLOGY_REVIEW_ITEM_PARAM, ontologyReviewItemFromSearch } from "../../ontologyRouteState";
@@ -81,6 +83,14 @@ export function VocabularyReviewTab() {
   const selectedItem = useMemo(
     () => response?.items.find((item) => item.item_id === selectedId) ?? null,
     [response, selectedId],
+  );
+  const dictionaryValues = useMemo(
+    () => vocabularyDictionaryValues(selectedItem?.terms ?? []),
+    [selectedItem],
+  );
+  const supportingTerms = useMemo(
+    () => vocabularySupportingTerms(selectedItem?.terms ?? []),
+    [selectedItem],
   );
 
   useEffect(() => {
@@ -286,6 +296,17 @@ export function VocabularyReviewTab() {
                     <DecisionButton label="Do not keep" value={false} selected={decision === false} disabled={Boolean(mismatchedDraft)} onSelect={changeDecision} />
                   </div>
                 </fieldset>
+                <div style={{ ...metadataRowStyle, marginTop: 14 }}>
+                  <span style={metadataLabelStyle}>Dictionary values ({dictionaryValues.length})</span>
+                  <div style={chipListStyle}>
+                    {dictionaryValues.map((term) => (
+                      <span key={term.item_id} style={chipStyle} title={term.term_iri}>
+                        {term.label || term.term_iri}
+                      </span>
+                    ))}
+                    {!dictionaryValues.length ? <span style={mutedStyle}>No dictionary values were returned by this source.</span> : null}
+                  </div>
+                </div>
                 <label style={{ ...labelStyle, marginTop: 14 }} htmlFor="vocabulary-review-annotation">Annotation</label>
                 <textarea
                   id="vocabulary-review-annotation"
@@ -324,12 +345,20 @@ export function VocabularyReviewTab() {
                 </div>
               </form>
               <section style={cardStyle}>
-                <h3 style={sectionTitleStyle}>Derived terms ({selectedItem.terms.length})</h3>
+                <h3 style={sectionTitleStyle}>Dictionary value details ({dictionaryValues.length})</h3>
                 <div style={termListStyle}>
-                  {selectedItem.terms.map((term) => <VocabularyTermCard key={term.item_id} term={term} />)}
-                  {!selectedItem.terms.length ? <div style={emptyStyle}>No derived terms were returned.</div> : null}
+                  {dictionaryValues.map((term) => <VocabularyTermCard key={term.item_id} term={term} />)}
+                  {!dictionaryValues.length ? <div style={emptyStyle}>No dictionary values were returned by this source.</div> : null}
                 </div>
               </section>
+              {supportingTerms.length ? (
+                <section style={cardStyle}>
+                  <h3 style={sectionTitleStyle}>Supporting source terms ({supportingTerms.length})</h3>
+                  <div style={termListStyle}>
+                    {supportingTerms.map((term) => <VocabularyTermCard key={term.item_id} term={term} />)}
+                  </div>
+                </section>
+              ) : null}
             </>
           ) : <div style={emptyStyle}>Select a configured source.</div>}
         </main>

@@ -46,8 +46,10 @@ import {
   propertyReviewCounts,
   propertyReviewRequest,
   propertyReviewStatus,
+  vocabularyDictionaryValues,
   vocabularyReviewCounts,
   vocabularyReviewStatus,
+  vocabularySupportingTerms,
 } from "../src/workspaces/OntologyWorkspace/reviewModel.ts";
 import type {
   AuthoringReview,
@@ -55,6 +57,7 @@ import type {
   ProposalReceipt,
   RdfAssertion,
   VocabularyReviewItem,
+  VocabularyReviewTerm,
 } from "../src/workspaces/OntologyWorkspace/types.ts";
 
 const { createElement } = React;
@@ -280,6 +283,32 @@ test("review API preserves source revision conflict status", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("vocabulary review separates dictionary values from source metadata terms", () => {
+  const term = (
+    itemId: string,
+    kind: VocabularyReviewTerm["term_kind"],
+    schemes: string[],
+  ): VocabularyReviewTerm => ({
+    item_id: itemId,
+    term_iri: `https://uo.karelin.ai/ontology#${itemId}`,
+    term_kind: kind,
+    label: itemId,
+    labels: [itemId],
+    comment: null,
+    notations: [],
+    in_schemes: schemes,
+    rdf_types: [],
+  });
+  const terms = [
+    term("HermesTheme", "concept", ["https://uo.karelin.ai/ontology#Theme"]),
+    term("Theme", "concept_scheme", []),
+    term("ThemeClass", "class", []),
+  ];
+
+  assert.deepEqual(vocabularyDictionaryValues(terms).map((item) => item.item_id), ["HermesTheme"]);
+  assert.deepEqual(vocabularySupportingTerms(terms).map((item) => item.item_id), ["Theme", "ThemeClass"]);
 });
 
 test("FastAPI string and validation-array details normalize to readable errors", () => {

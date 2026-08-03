@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SKOS concept schemes, including UO vocabulary classes modeled as subclasses
   of `skos:ConceptScheme`, remain in vocabulary surfaces and are no longer also
   presented as peer ontologies in the ontology registry.
+- Vocabulary review decisions now show controlled dictionary values beside the
+  Keep / Do not keep controls and separate concepts from supporting scheme and
+  class terms.
 
 ### Added
 
