@@ -177,3 +177,54 @@ def test_managed_entries_reject_legacy_draft_propose_and_publish(
     assert list(state.ontology_proposals) == [proposal.proposal_id]
     assert state.ontology_proposals[proposal.proposal_id].state == "approved"
     assert session.mutation_calls == 0
+
+
+class _RegistrySession:
+    def get_nodes(self, **_kwargs):
+        nodes = [
+            {
+                "id": "https://uo.karelin.ai/ontology#",
+                "type": "owl:Ontology",
+                "properties": {"content": "UO"},
+            },
+            {
+                "id": "https://uo.karelin.ai/ontology#Axis",
+                "type": "skos:ConceptScheme",
+                "properties": {"content": "Axis"},
+            },
+            {
+                "id": "https://uo.karelin.ai/ontology#Grouping",
+                "type": "skos:ConceptScheme",
+                "properties": {"content": "Grouping"},
+            },
+            {
+                "id": "https://uo.karelin.ai/ontology#Theme",
+                "type": "skos:ConceptScheme",
+                "properties": {"content": "Theme"},
+            },
+        ]
+        return nodes, len(nodes)
+
+
+def test_registry_excludes_skos_vocabularies_from_ontology_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routes = _load_routes(monkeypatch)
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(ontology_registry={}))
+    )
+
+    entries = asyncio.run(
+        routes.list_registry(
+            request,
+            q=None,
+            status=None,
+            format=None,
+            session=_RegistrySession(),
+        )
+    )
+
+    assert [entry.uri for entry in entries] == [
+        "https://uo.karelin.ai/ontology#"
+    ]
+    assert routes._classify_node_type("skos:ConceptScheme") == "scheme"

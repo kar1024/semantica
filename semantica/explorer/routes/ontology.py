@@ -69,7 +69,7 @@ _SCHEME_TYPES = frozenset({
 _ONTOLOGY_TYPES = frozenset({
     "owl:Ontology",
     "http://www.w3.org/2002/07/owl#Ontology",
-}) | _SCHEME_TYPES
+})
 
 _SEARCHABLE_TYPES = _CLASS_TYPES | _PROPERTY_TYPES | _INDIVIDUAL_TYPES | _CONCEPT_TYPES | _SCHEME_TYPES
 
@@ -1208,7 +1208,7 @@ async def list_registry(
         etype = _classify_node_type(ntype)
         scheme_uri = node.get("properties", {}).get("scheme_uri") or node.get("properties", {}).get("uri")
 
-        if etype == "ontology" or etype == "scheme":
+        if etype == "ontology":
             if nid and nid not in registry:
                 implicit[nid] = node
         elif scheme_uri:
