@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createElement } from "react";
+import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   RDF_CLASSES,
@@ -25,6 +25,7 @@ import { ProposalReceiptDetails } from "../src/workspaces/OntologyWorkspace/Prop
 import { loadAuthoringEntity } from "../src/workspaces/OntologyWorkspace/api.ts";
 import type { ProposalReceipt, RdfAssertion } from "../src/workspaces/OntologyWorkspace/types.ts";
 
+const { createElement } = React;
 const TERM_IRI = "https://uo.karelin.ai/ontology#TestTerm";
 const CUSTOM_PREDICATE = "https://example.test/custom";
 
@@ -191,4 +192,41 @@ test("publish receipts render the worker result fields", () => {
   assert.match(errorMarkup, /false/);
   assert.match(errorMarkup, /2026-08-02T12:01:00Z/);
   assert.match(errorMarkup, /push rejected/);
+});
+
+test("application navigation retains every workspace and ontology deep links", async () => {
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const previousReact = reactGlobal.React;
+  reactGlobal.React = React;
+
+  try {
+    const [{ default: App }, { initialWorkspaceFromSearch, withoutOntologyParams }] = await Promise.all([
+      import("../src/App.tsx"),
+      import("../src/ontologyRouteState.ts"),
+    ]);
+    const markup = renderToStaticMarkup(createElement(App));
+
+    for (const title of [
+      "Graph and vocabulary browsing",
+      "Query and inspect the dataset",
+      "Decision chains and precedent review",
+      "Import, export, and merge workflows",
+      "Lineage and governance tooling",
+      "Authoring, proposals, health, and SHACL",
+    ]) {
+      assert(markup.includes(`title="${title}"`), `missing application navigation: ${title}`);
+    }
+    assert.match(markup, /Navigate knowledge/);
+    assert.equal(initialWorkspaceFromSearch(""), "welcome");
+    assert.equal(initialWorkspaceFromSearch("?ontologyTab=health"), "ontology-hub");
+    assert.equal(initialWorkspaceFromSearch(`?ontologyEntity=${encodeURIComponent(TERM_IRI)}`), "ontology-hub");
+    assert.equal(
+      withoutOntologyParams(`https://semantica.test/?keep=1&ontologyTab=health&ontologyEntity=${encodeURIComponent(TERM_IRI)}#anchor`),
+      "/?keep=1#anchor",
+    );
+    assert.equal(withoutOntologyParams("https://semantica.test/?ontologyTab"), "/");
+  } finally {
+    if (previousReact === undefined) delete reactGlobal.React;
+    else reactGlobal.React = previousReact;
+  }
 });

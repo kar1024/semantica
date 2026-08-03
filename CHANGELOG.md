@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed - [Claude] - 2026-08-02
 
+- Restored the Knowledge Explorer, Analyze, Decisions, Enrich, Manage, and
+  Vocabulary Browser navigation while retaining Ontology Hub and its deep links.
 - Authoring entity links now pass full IRIs as query parameters so the
   `https://` authority delimiter is preserved during detail lookup.
 

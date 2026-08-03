@@ -11,6 +11,11 @@ import { OntologyManager } from "./OntologyManager";
 import { OntologyEditor } from "./OntologyEditor";
 import { ShaclStudio } from "./ShaclStudio";
 import { VersionsTab } from "./VersionsTab";
+import {
+  ONTOLOGY_ENTITY_PARAM as ENTITY_PARAM,
+  ONTOLOGY_TAB_PARAM as TAB_PARAM,
+  withoutOntologyParams,
+} from "../../ontologyRouteState";
 
 export type OntologyHubTab =
   | "registry"
@@ -19,8 +24,6 @@ export type OntologyHubTab =
   | "alignments"
   | "health"
   | "shacl";
-
-const TAB_PARAM = "ontologyTab";
 
 const TABS: { id: OntologyHubTab; label: string; icon: typeof Sliders }[] = [
   { id: "editor", label: "Author", icon: Sliders },
@@ -61,6 +64,10 @@ export function OntologyWorkspace({ onJumpToGraphNode }: OntologyWorkspaceProps)
     writeTabParam(activeTab);
   }, [activeTab]);
 
+  useEffect(() => () => {
+    window.history.replaceState(null, "", withoutOntologyParams(window.location.href));
+  }, []);
+
   const handleTabChange = useCallback((tab: OntologyHubTab) => {
     setActiveTab(tab);
   }, []);
@@ -68,7 +75,7 @@ export function OntologyWorkspace({ onJumpToGraphNode }: OntologyWorkspaceProps)
   const handleFixInEditor = useCallback((entityUri: string) => {
     const params = new URLSearchParams(window.location.search);
     params.set(TAB_PARAM, "editor");
-    params.set("ontologyEntity", entityUri);
+    params.set(ENTITY_PARAM, entityUri);
     window.history.replaceState(null, "", `?${params.toString()}`);
     setActiveTab("editor");
   }, []);

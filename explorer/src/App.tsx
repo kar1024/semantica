@@ -4,6 +4,7 @@ import {
   ArrowRight,
   BrainCircuit,
   Database,
+  FileSearch,
   GitBranchPlus,
   GitMerge,
   Network,
@@ -11,10 +12,12 @@ import {
   Route,
   Scale,
   Search,
+  Settings2,
   ShieldCheck,
   type LucideIcon,
 } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
+import { initialWorkspaceFromSearch } from './ontologyRouteState';
 
 const DecisionWorkspace = lazy(() => import('./workspaces/DecisionWorkspace/DecisionWorkspace').then((module) => ({ default: module.DecisionWorkspace })));
 const DiffMergeWorkspace = lazy(() => import('./workspaces/DiffMergeWorkspace/DiffMergeWorkspace').then((module) => ({ default: module.DiffMergeWorkspace })));
@@ -75,6 +78,11 @@ const PREVIEW_DOTS = Array.from({ length: 42 }, (_, i) => ({
 }));
 
 const navItems: NavItem[] = [
+  { id: 'explore', label: 'Knowledge Explorer', hint: 'Graph and vocabulary browsing', icon: Database },
+  { id: 'analyze', label: 'Analyze', hint: 'Query and inspect the dataset', icon: FileSearch },
+  { id: 'decisions', label: 'Decisions', hint: 'Decision chains and precedent review', icon: Scale },
+  { id: 'enrich', label: 'Enrich', hint: 'Import, export, and merge workflows', icon: GitBranchPlus },
+  { id: 'manage', label: 'Manage', hint: 'Lineage and governance tooling', icon: Settings2 },
   { id: 'ontology-hub', label: 'Ontology Hub', hint: 'Authoring, proposals, health, and SHACL', icon: GitMerge },
 ];
 
@@ -1742,7 +1750,9 @@ function WelcomeScreen({
 }
 
 export default function App() {
-  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('ontology-hub');
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(() =>
+    typeof window === 'undefined' ? 'welcome' : initialWorkspaceFromSearch(window.location.search),
+  );
   const [exploreView, setExploreView] = useState<ExploreView>('graph');
   const [analyzeView, setAnalyzeView] = useState<AnalyzeView>('reasoning');
   const [enrichView, setEnrichView] = useState<EnrichView>('import');
@@ -1787,6 +1797,9 @@ export default function App() {
             <>
               <button className="workspace-tab" data-active={exploreView === 'graph'} onClick={() => setExploreView('graph')}>
                 Semantica Explorer
+              </button>
+              <button className="workspace-tab" data-active={exploreView === 'vocabulary'} onClick={() => setExploreView('vocabulary')}>
+                Vocabulary Browser
               </button>
             </>
           }
@@ -1943,7 +1956,7 @@ export default function App() {
       <style>{shellStyles}</style>
       <div className="app-shell">
         <aside className="app-rail">
-          <button className="brand-pill" title="Semantica Knowledge Explorer" onClick={() => setActiveWorkspace('ontology-hub')} style={{ cursor: 'pointer', border: '1px solid rgba(127,208,255,0.18)' }}>SKE</button>
+          <button className="brand-pill" title="Semantica Knowledge Explorer" onClick={() => setActiveWorkspace('welcome')} style={{ cursor: 'pointer', border: '1px solid rgba(127,208,255,0.18)' }}>SKE</button>
           {navItems.map(({ id, label, hint, icon: Icon }) => (
             <button
               key={id}
