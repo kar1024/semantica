@@ -6,9 +6,11 @@ import hashlib
 import json
 import threading
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from pydantic import ValidationError
 from rdflib import BNode, Graph
 from rdflib import Literal as RDFLiteral
 from rdflib import URIRef
@@ -18,8 +20,11 @@ from rdflib.util import guess_format
 from .authoring import (
     AuthoringConfig,
     AuthoringConfigurationError,
+    FrontmatterInventory,
+    FrontmatterInventoryField,
     LoadedDocument,
     ProposalCreate,
+    ReviewUpdate,
     SourceConflictError,
     _consumer_impacts,
     _document_summary,
@@ -156,7 +161,9 @@ def _target_graph(
     return target
 
 
-def _stable_reference_snapshot(path: Path) -> tuple[tuple[str, int, int], bytes]:
+def _stable_file_snapshot(
+    path: Path, description: str
+) -> tuple[tuple[str, int, int], bytes]:
     source = path.resolve()
     try:
         before = source.stat()
@@ -164,15 +171,19 @@ def _stable_reference_snapshot(path: Path) -> tuple[tuple[str, int, int], bytes]
         after = source.stat()
     except OSError as exc:
         raise AuthoringConfigurationError(
-            f"cannot read reference ontology {source}: {exc}"
+            f"cannot read {description} {source}: {exc}"
         ) from exc
     before_token = (str(source), before.st_mtime_ns, before.st_size)
     after_token = (str(source), after.st_mtime_ns, after.st_size)
     if before_token != after_token:
         raise AuthoringConfigurationError(
-            f"reference ontology changed while being read: {source}"
+            f"{description} changed while being read: {source}"
         )
     return after_token, raw
+
+
+def _stable_reference_snapshot(path: Path) -> tuple[tuple[str, int, int], bytes]:
+    return _stable_file_snapshot(path, "reference ontology")
 
 
 def _assertion_keys(payload: Optional[dict[str, Any]]) -> set[str]:
@@ -270,11 +281,18 @@ def _projection_payload(
             content = (
                 summary["labels"][0]["value"] if summary["labels"] else str(subject)
             )
+            projected_type = _PROJECTED_NODE_TYPES[summary["term_kind"]]
+            if (
+                subject,
+                RDFS.subClassOf,
+                SKOS.ConceptScheme,
+            ) in document.graph:
+                projected_type = "skos:ConceptScheme"
             nodes.setdefault(
                 str(subject),
                 {
                     "id": str(subject),
-                    "type": _PROJECTED_NODE_TYPES[summary["term_kind"]],
+                    "type": projected_type,
                     "content": content,
                     "properties": properties,
                 },
@@ -306,6 +324,105 @@ def _projection_payload(
     return list(nodes.values()), list(edges.values())
 
 
+@dataclass(frozen=True)
+class _LoadedVocabularyReview:
+    document: LoadedDocument
+    source_path: str
+    revision: str
+    comment: Optional[str]
+
+
+@dataclass(frozen=True)
+class _LoadedFrontmatterInventory:
+    inventory: FrontmatterInventory
+    revision: str
+
+
+def _frontmatter_field_revision(field: FrontmatterInventoryField) -> str:
+    payload = json_dump(field.model_dump(mode="json")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _review_literal_values(
+    graph: Graph, subject: URIRef, predicate: URIRef
+) -> list[str]:
+    return sorted(
+        str(value)
+        for value in graph.objects(subject, predicate)
+        if isinstance(value, RDFLiteral)
+    )
+
+
+def _load_vocabulary_review(config: Any, raw: bytes) -> _LoadedVocabularyReview:
+    document = _load_reference(config, raw)
+    ontology = URIRef(document.ontology_iri)
+    comments = _review_literal_values(document.graph, ontology, RDFS.comment)
+    return _LoadedVocabularyReview(
+        document=document,
+        source_path=config.source_path,
+        revision=hashlib.sha256(raw).hexdigest(),
+        comment=comments[0] if comments else None,
+    )
+
+
+def _review_vocabulary_terms(source: _LoadedVocabularyReview) -> list[dict[str, Any]]:
+    document = source.document
+    ontology = URIRef(document.ontology_iri)
+    items: list[dict[str, Any]] = []
+    for subject in sorted(
+        {
+            value
+            for value in document.graph.subjects()
+            if isinstance(value, URIRef) and value != ontology
+        },
+        key=str,
+    ):
+        summary = _term_summary(document, subject)
+        notations = _review_literal_values(document.graph, subject, SKOS.notation)
+        in_schemes = sorted(
+            str(value)
+            for value in document.graph.objects(subject, SKOS.inScheme)
+            if isinstance(value, URIRef)
+        )
+        if summary is None and not notations and not in_schemes:
+            continue
+        labels = sorted(
+            {
+                *(_review_literal_values(document.graph, subject, RDFS.label)),
+                *(_review_literal_values(document.graph, subject, SKOS.prefLabel)),
+            }
+        )
+        comments = sorted(
+            {
+                *(_review_literal_values(document.graph, subject, RDFS.comment)),
+                *(_review_literal_values(document.graph, subject, SKOS.definition)),
+            }
+        )
+        rdf_types = sorted(
+            str(value)
+            for value in document.graph.objects(subject, RDF.type)
+            if isinstance(value, URIRef)
+        )
+        items.append(
+            {
+                "item_id": str(subject),
+                "term_iri": str(subject),
+                "term_kind": summary["term_kind"] if summary is not None else None,
+                "label": (
+                    labels[0]
+                    if labels
+                    else (notations[0] if notations else str(subject))
+                ),
+                "labels": labels,
+                "comment": comments[0] if comments else None,
+                "notations": notations,
+                "in_schemes": in_schemes,
+                "rdf_types": rdf_types,
+            }
+        )
+    return items
+
+
 class AuthoringService:
     def __init__(self, config: AuthoringConfig, config_path: Path) -> None:
         self.config = config
@@ -319,6 +436,11 @@ class AuthoringService:
         self._document_cache: dict[str, LoadedDocument] = {}
         self._document_tokens: dict[str, object] = {}
         self._projection_lock = threading.RLock()
+        self._review_lock = threading.RLock()
+        self._review_vocabulary_cache: dict[str, _LoadedVocabularyReview] = {}
+        self._review_vocabulary_tokens: dict[str, object] = {}
+        self._frontmatter_inventory_cache: Optional[_LoadedFrontmatterInventory] = None
+        self._frontmatter_inventory_token: Optional[object] = None
 
     @classmethod
     def from_environment(cls) -> "AuthoringService":
@@ -500,6 +622,189 @@ class AuthoringService:
         if detail is None:
             raise KeyError(term_iri)
         return detail
+
+    def _vocabulary_reviews(self) -> dict[str, _LoadedVocabularyReview]:
+        reviews = self.config.reviews
+        if reviews is None:
+            return {}
+        with self._review_lock:
+            for source_config in reviews.vocabulary_sources:
+                path = Path(source_config.path).resolve()
+                try:
+                    stat = path.stat()
+                except OSError as exc:
+                    raise AuthoringConfigurationError(
+                        f"cannot read review vocabulary {path}: {exc}"
+                    ) from exc
+                token = (str(path), stat.st_mtime_ns, stat.st_size)
+                if (
+                    self._review_vocabulary_tokens.get(source_config.document_id)
+                    != token
+                ):
+                    stable_token, raw = _stable_file_snapshot(path, "review vocabulary")
+                    self._review_vocabulary_cache[source_config.document_id] = (
+                        _load_vocabulary_review(source_config, raw)
+                    )
+                    self._review_vocabulary_tokens[source_config.document_id] = (
+                        stable_token
+                    )
+            return {
+                source.document_id: self._review_vocabulary_cache[source.document_id]
+                for source in reviews.vocabulary_sources
+            }
+
+    def _frontmatter_inventory(self) -> Optional[_LoadedFrontmatterInventory]:
+        reviews = self.config.reviews
+        if reviews is None:
+            return None
+        with self._review_lock:
+            inventory_config = reviews.frontmatter_inventory
+            path = Path(inventory_config.path).resolve()
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                raise AuthoringConfigurationError(
+                    f"cannot read frontmatter inventory {path}: {exc}"
+                ) from exc
+            token = (str(path), stat.st_mtime_ns, stat.st_size)
+            if self._frontmatter_inventory_token != token:
+                stable_token, raw = _stable_file_snapshot(path, "frontmatter inventory")
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                    inventory = FrontmatterInventory.model_validate(payload)
+                except (
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                    ValidationError,
+                ) as exc:
+                    raise AuthoringConfigurationError(
+                        f"invalid frontmatter inventory {path}: {exc}"
+                    ) from exc
+                if inventory.source.source_id != inventory_config.source_id:
+                    raise AuthoringConfigurationError(
+                        "frontmatter inventory source.source_id does not match "
+                        "reviews.frontmatter_inventory.source_id"
+                    )
+                self._frontmatter_inventory_cache = _LoadedFrontmatterInventory(
+                    inventory=inventory,
+                    revision=hashlib.sha256(raw).hexdigest(),
+                )
+                self._frontmatter_inventory_token = stable_token
+            return self._frontmatter_inventory_cache
+
+    @staticmethod
+    def _review_response(
+        row: Optional[dict[str, Any]], current_revision: str
+    ) -> Optional[dict[str, Any]]:
+        if row is None:
+            return None
+        return {
+            "collection": row["collection"],
+            "item_id": row["item_id"],
+            "source_revision": row["source_revision"],
+            "keep": None if row["keep"] is None else bool(row["keep"]),
+            "annotation": row["annotation"],
+            "actor": row["actor"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "stale": row["source_revision"] != current_revision,
+        }
+
+    def review_vocabularies(self) -> dict[str, Any]:
+        sources = self._vocabulary_reviews()
+        reviews = self.store.reviews("vocabulary")
+        items: list[dict[str, Any]] = []
+        for document_id, source in sources.items():
+            row = reviews.get(document_id)
+            items.append(
+                {
+                    "collection": "vocabulary",
+                    "item_id": document_id,
+                    "document_id": document_id,
+                    "source_path": source.source_path,
+                    "ontology_iri": source.document.ontology_iri,
+                    "label": source.document.name,
+                    "comment": source.comment,
+                    "source_revision": source.revision,
+                    "local_only": True,
+                    "terms": _review_vocabulary_terms(source),
+                    "review": self._review_response(row, source.revision),
+                }
+            )
+        return {"items": items, "total": len(items)}
+
+    def review_properties(self) -> dict[str, Any]:
+        loaded = self._frontmatter_inventory()
+        if loaded is None:
+            return {
+                "schema_version": None,
+                "source": None,
+                "source_revision": None,
+                "items": [],
+                "total": 0,
+            }
+        reviews = self.store.reviews("property")
+        items: list[dict[str, Any]] = []
+        for field in loaded.inventory.fields:
+            source_revision = _frontmatter_field_revision(field)
+            item = field.model_dump(mode="json")
+            item.update(
+                {
+                    "collection": "property",
+                    "item_id": field.path,
+                    "source_revision": source_revision,
+                    "review": self._review_response(
+                        reviews.get(field.path), source_revision
+                    ),
+                }
+            )
+            items.append(item)
+        return {
+            "schema_version": loaded.inventory.schema_version,
+            "source": loaded.inventory.source.model_dump(mode="json"),
+            "source_revision": loaded.revision,
+            "items": items,
+            "total": len(items),
+        }
+
+    def update_review(self, request: ReviewUpdate) -> dict[str, Any]:
+        if request.collection == "vocabulary":
+            source = self._vocabulary_reviews().get(request.item_id)
+            if source is None:
+                raise KeyError(request.item_id)
+            current_revision = source.revision
+        else:
+            loaded = self._frontmatter_inventory()
+            if loaded is None:
+                raise KeyError(request.item_id)
+            field = next(
+                (
+                    field
+                    for field in loaded.inventory.fields
+                    if field.path == request.item_id
+                ),
+                None,
+            )
+            if field is None:
+                raise KeyError(request.item_id)
+            current_revision = _frontmatter_field_revision(field)
+        if request.source_revision != current_revision:
+            raise SourceConflictError(
+                f"source revision changed: expected {request.source_revision}, "
+                f"current {current_revision}"
+            )
+        row = self.store.save_review(
+            collection=request.collection,
+            item_id=request.item_id,
+            source_revision=current_revision,
+            keep=request.keep,
+            annotation=request.annotation,
+            actor=self.config.actor,
+        )
+        response = self._review_response(row, current_revision)
+        if response is None:
+            raise RuntimeError("persisted review is unavailable")
+        return response
 
     def create_proposal(self, request: ProposalCreate) -> dict[str, Any]:
         document = self.document(request.document_id)

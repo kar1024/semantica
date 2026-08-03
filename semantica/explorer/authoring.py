@@ -105,6 +105,57 @@ class ReferenceConfig(BaseModel):
     local_only: Literal[True]
 
 
+class VocabularyReviewSourceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str
+    path: str
+    source_path: str
+    local_only: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_strings(self) -> "VocabularyReviewSourceConfig":
+        for name, value in (
+            ("document_id", self.document_id),
+            ("path", self.path),
+            ("source_path", self.source_path),
+        ):
+            if not value.strip():
+                raise ValueError(f"reviews.vocabulary_sources.{name} must not be blank")
+            if "\x00" in value:
+                raise ValueError(
+                    f"reviews.vocabulary_sources.{name} must not contain NUL"
+                )
+        return self
+
+
+class FrontmatterInventoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    path: str
+
+    @model_validator(mode="after")
+    def validate_strings(self) -> "FrontmatterInventoryConfig":
+        for name, value in (("source_id", self.source_id), ("path", self.path)):
+            if not value.strip():
+                raise ValueError(
+                    f"reviews.frontmatter_inventory.{name} must not be blank"
+                )
+            if "\x00" in value:
+                raise ValueError(
+                    f"reviews.frontmatter_inventory.{name} must not contain NUL"
+                )
+        return self
+
+
+class ReviewsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    vocabulary_sources: list[VocabularyReviewSourceConfig]
+    frontmatter_inventory: FrontmatterInventoryConfig
+
+
 class ConsumerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -129,6 +180,7 @@ class AuthoringConfig(BaseModel):
     canonical: CanonicalConfig
     references: list[ReferenceConfig]
     consumers: list[ConsumerConfig]
+    reviews: Optional[ReviewsConfig] = None
 
     @field_validator("actor")
     @classmethod
@@ -143,10 +195,128 @@ class AuthoringConfig(BaseModel):
             self.canonical.document_id,
             *(item.document_id for item in self.references),
         ]
+        if self.reviews is not None:
+            ids.extend(item.document_id for item in self.reviews.vocabulary_sources)
+            ids.append(self.reviews.frontmatter_inventory.source_id)
         if len(ids) != len(set(ids)):
+            raise ValueError("canonical, reference, and review IDs must be unique")
+        return self
+
+
+class FrontmatterInventorySource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    vault_path: str
+    observed_at: str
+    notes_scanned: int = Field(ge=0)
+    frontmatter_notes: int = Field(ge=0)
+    parse_failures: int = Field(ge=0)
+    excluded_path_segments: list[str]
+    mapping_source_path: str
+    mapping_source_revision: str
+
+    @model_validator(mode="after")
+    def validate_strings(self) -> "FrontmatterInventorySource":
+        values = (
+            ("source_id", self.source_id),
+            ("vault_path", self.vault_path),
+            ("observed_at", self.observed_at),
+            ("mapping_source_path", self.mapping_source_path),
+            ("mapping_source_revision", self.mapping_source_revision),
+        )
+        for name, value in values:
+            if not value.strip():
+                raise ValueError(
+                    f"frontmatter_inventory.source.{name} must not be blank"
+                )
+            if "\x00" in value:
+                raise ValueError(
+                    f"frontmatter_inventory.source.{name} must not contain NUL"
+                )
+        for value in self.excluded_path_segments:
+            if "\x00" in value:
+                raise ValueError(
+                    "frontmatter_inventory.source.excluded_path_segments must not contain NUL"
+                )
+        return self
+
+
+class FrontmatterInventoryField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    top_level: bool
+    occurrences: int = Field(ge=0)
+    value_types: dict[str, int]
+    explicit_property_iris: list[str]
+
+    @model_validator(mode="after")
+    def validate_field(self) -> "FrontmatterInventoryField":
+        if not self.path.strip():
+            raise ValueError("frontmatter_inventory.fields.path must not be blank")
+        if "\x00" in self.path:
+            raise ValueError("frontmatter_inventory.fields.path must not contain NUL")
+        for value_type, count in self.value_types.items():
+            if not value_type.strip():
+                raise ValueError(
+                    "frontmatter_inventory.fields.value_types keys must not be blank"
+                )
+            if "\x00" in value_type:
+                raise ValueError(
+                    "frontmatter_inventory.fields.value_types keys must not contain NUL"
+                )
+            if count < 0:
+                raise ValueError(
+                    "frontmatter_inventory.fields.value_types counts must be nonnegative"
+                )
+        for iri in self.explicit_property_iris:
+            validate_iri(iri, "frontmatter_inventory.fields.explicit_property_iris")
+        if len(self.explicit_property_iris) != len(set(self.explicit_property_iris)):
             raise ValueError(
-                "canonical and reference document_id values must be unique"
+                "frontmatter_inventory.fields.explicit_property_iris contains duplicates"
             )
+        return self
+
+
+class FrontmatterInventory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    source: FrontmatterInventorySource
+    fields: list[FrontmatterInventoryField]
+
+    @model_validator(mode="after")
+    def validate_field_paths(self) -> "FrontmatterInventory":
+        paths = [field.path for field in self.fields]
+        if len(paths) != len(set(paths)):
+            raise ValueError("frontmatter_inventory.fields contains duplicate paths")
+        return self
+
+
+class ReviewUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    collection: Literal["vocabulary", "property"]
+    item_id: str
+    source_revision: str
+    keep: Optional[bool]
+    annotation: str
+
+    @model_validator(mode="after")
+    def validate_review(self) -> "ReviewUpdate":
+        for name, value in (
+            ("item_id", self.item_id),
+            ("source_revision", self.source_revision),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must not be blank")
+            if "\x00" in value:
+                raise ValueError(f"{name} must not contain NUL")
+        if "\x00" in self.annotation:
+            raise ValueError("annotation must not contain NUL")
+        if self.collection == "property" and self.keep is not None:
+            raise ValueError("property review keep must be null")
         return self
 
 

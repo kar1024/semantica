@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import threading
 import types
@@ -18,11 +19,12 @@ from fastapi.testclient import TestClient
 from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
 from semantica.explorer import authoring_service as authoring_service_module
-from semantica.explorer.authoring import AuthoringConfig, ProposalCreate
+from semantica.explorer.authoring import AuthoringConfig, ProposalCreate, ReviewUpdate
 from semantica.explorer.authoring_service import (
     AuthoringService,
     _payload_from_detail,
 )
+from semantica.explorer.authoring_store import AuthoringStore
 
 NAMESPACE = "https://uo.karelin.ai/ontology#"
 
@@ -41,10 +43,10 @@ def _write_fixture_sources(tmp_path: Path) -> tuple[Path, Path]:
 
 uo: a owl:Ontology ; rdfs:label "UO" .
 uo:Category a owl:Class ;
-    rdfs:subClassOf skos:Concept ;
+    rdfs:subClassOf skos:Concept, skos:ConceptScheme ;
     rdfs:label "Category" ;
     rdfs:comment "A user-defined category." .
-uo:item a uo:Category ; skos:prefLabel "Item" .
+uo:item a uo:Category ; skos:prefLabel "Item" ; skos:inScheme uo:Category .
 uo:old a uo:Category ;
     skos:prefLabel "Old" ;
     owl:deprecated "true"^^xsd:boolean .
@@ -71,44 +73,138 @@ uo:hidden rdfs:label "Existing untyped subject" .
     return source_root, reference
 
 
-def _service(tmp_path: Path) -> AuthoringService:
+def _service(
+    tmp_path: Path, reviews: dict[str, object] | None = None
+) -> AuthoringService:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source_root, reference = _write_fixture_sources(tmp_path)
-    config = AuthoringConfig.model_validate(
-        {
-            "actor": "Alex",
-            "storage": {
-                "sqlite_path": str(tmp_path / "authoring.sqlite3"),
-                "outbox_path": str(tmp_path / "outbox"),
-                "receipts_path": str(tmp_path / "receipts"),
+    payload: dict[str, object] = {
+        "actor": "Alex",
+        "storage": {
+            "sqlite_path": str(tmp_path / "authoring.sqlite3"),
+            "outbox_path": str(tmp_path / "outbox"),
+            "receipts_path": str(tmp_path / "receipts"),
+        },
+        "canonical": {
+            "document_id": "uo",
+            "name": "UO",
+            "namespace": NAMESPACE,
+            "source_root": str(source_root),
+            "source_manifest": ["uo.ttl", "other.ttl"],
+            "source_url": None,
+        },
+        "references": [
+            {
+                "document_id": "reference",
+                "path": str(reference),
+                "local_only": True,
+            }
+        ],
+        "consumers": [
+            {
+                "id": "obsidian",
+                "label": "Obsidian",
+                "paths": ["/ontology/consumer.py"],
+                "href": None,
+                "relationship": "ontology consumer",
+                "read_only": True,
+            }
+        ],
+    }
+    if reviews is not None:
+        payload["reviews"] = reviews
+    config = AuthoringConfig.model_validate(payload)
+    return AuthoringService(config, tmp_path / "authoring.json")
+
+
+def _write_review_sources(tmp_path: Path) -> tuple[Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    vocabulary = tmp_path / "review-vocabulary.ttl"
+    vocabulary.write_text(
+        """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix uo: <https://uo.karelin.ai/ontology#> .
+
+<https://uo.karelin.ai/ontology/set/review-source> a owl:Ontology ;
+    rdfs:label "Review vocabulary" ;
+    rdfs:comment "Read-only Obsidian candidate." .
+
+uo:ReviewScheme a skos:ConceptScheme ; rdfs:label "Review scheme" .
+uo:InSchemeValue a uo:UndeclaredVocabularyType ;
+    rdfs:label "In scheme" ;
+    skos:inScheme uo:ReviewScheme .
+uo:SchemeLessValue a uo:UndeclaredVocabularyType ;
+    rdfs:label "Scheme-less" ;
+    skos:notation "Scheme-less" .
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    inventory = tmp_path / "frontmatter-inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source": {
+                    "source_id": "obsidian-frontmatter",
+                    "vault_path": r"D:\_",
+                    "observed_at": "2026-08-02T12:00:00-07:00",
+                    "notes_scanned": 10,
+                    "frontmatter_notes": 8,
+                    "parse_failures": 1,
+                    "excluded_path_segments": [".obsidian"],
+                    "mapping_source_path": r"D:\_\KG\_ontology\mapping.json",
+                    "mapping_source_revision": "mapping-revision",
+                },
+                "fields": [
+                    {
+                        "path": "Status",
+                        "top_level": True,
+                        "occurrences": 5,
+                        "value_types": {"string": 5},
+                        "explicit_property_iris": [
+                            "https://uo.karelin.ai/ontology#status"
+                        ],
+                    },
+                    {
+                        "path": "nested.Value",
+                        "top_level": False,
+                        "occurrences": 2,
+                        "value_types": {"number": 1, "string": 1},
+                        "explicit_property_iris": [],
+                    },
+                ],
             },
-            "canonical": {
-                "document_id": "uo",
-                "name": "UO",
-                "namespace": NAMESPACE,
-                "source_root": str(source_root),
-                "source_manifest": ["uo.ttl", "other.ttl"],
-                "source_url": None,
-            },
-            "references": [
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return vocabulary, inventory
+
+
+def _review_service(tmp_path: Path) -> tuple[AuthoringService, Path, Path]:
+    vocabulary, inventory = _write_review_sources(tmp_path)
+    service = _service(
+        tmp_path,
+        reviews={
+            "vocabulary_sources": [
                 {
-                    "document_id": "reference",
-                    "path": str(reference),
+                    "document_id": "obsidian-review-vocabulary",
+                    "path": str(vocabulary),
+                    "source_path": (
+                        r"D:\_\KG\_ontology\ttl\census\vocabulary-review.ttl"
+                    ),
                     "local_only": True,
                 }
             ],
-            "consumers": [
-                {
-                    "id": "obsidian",
-                    "label": "Obsidian",
-                    "paths": ["/ontology/consumer.py"],
-                    "href": None,
-                    "relationship": "ontology consumer",
-                    "read_only": True,
-                }
-            ],
-        }
+            "frontmatter_inventory": {
+                "source_id": "obsidian-frontmatter",
+                "path": str(inventory),
+            },
+        },
     )
-    return AuthoringService(config, tmp_path / "authoring.json")
+    return service, vocabulary, inventory
 
 
 def _iri(value: str) -> dict[str, object]:
@@ -187,6 +283,427 @@ def _approve(service: AuthoringService, request: ProposalCreate) -> dict[str, ob
     proposal = service.create_proposal(request)
     service.submit(proposal["proposal_id"])
     return service.approve(proposal["proposal_id"])
+
+
+def test_reviews_table_initialization_preserves_existing_rows(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "pre-review.sqlite3"
+    receipts_path = tmp_path / "receipts"
+    proposal = {
+        "proposal_id": "proposal-before-reviews",
+        "document_id": "uo",
+        "ontology_iri": NAMESPACE,
+        "operation": "update",
+        "entity_uri": f"{NAMESPACE}Existing",
+        "source_file": "uo.ttl",
+        "base_revision": "base-revision",
+        "base_semantic_hash": "base-semantic-hash",
+        "target_payload_hash": "target-payload-hash",
+        "target_semantic_hash": "target-semantic-hash",
+        "summary": "Existing proposal",
+        "actor": "Alex",
+        "reviewer": "Alex",
+        "before_json": "{}",
+        "after_json": "{}",
+        "evidence_json": "[]",
+        "changes_json": "[]",
+        "term_diffs_json": "[]",
+        "consumer_impacts_json": "[]",
+        "validation_json": "{}",
+        "state": "published",
+        "handoff_id": "handoff-before-reviews",
+        "receipt_json": "{}",
+        "created_at": "2026-08-01T10:00:00+00:00",
+        "updated_at": "2026-08-01T11:00:00+00:00",
+    }
+    version = {
+        "proposal_id": proposal["proposal_id"],
+        "document_id": "uo",
+        "source_revision": "published-revision",
+        "target_semantic_hash": proposal["target_semantic_hash"],
+        "commit_sha": "0123456789abcdef",
+        "pushed": 1,
+        "published_at": "2026-08-01T11:00:00+00:00",
+        "receipt_json": "{}",
+    }
+    with sqlite3.connect(sqlite_path) as connection:
+        connection.executescript("""
+            CREATE TABLE proposals (
+                proposal_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                ontology_iri TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                entity_uri TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                base_revision TEXT NOT NULL,
+                base_semantic_hash TEXT NOT NULL,
+                target_payload_hash TEXT NOT NULL,
+                target_semantic_hash TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reviewer TEXT,
+                before_json TEXT,
+                after_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                changes_json TEXT NOT NULL,
+                term_diffs_json TEXT NOT NULL,
+                consumer_impacts_json TEXT NOT NULL,
+                validation_json TEXT NOT NULL,
+                state TEXT NOT NULL,
+                handoff_id TEXT,
+                receipt_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX proposals_document_state
+                ON proposals(document_id, state, created_at);
+            CREATE TABLE versions (
+                proposal_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                source_revision TEXT NOT NULL,
+                target_semantic_hash TEXT NOT NULL,
+                commit_sha TEXT,
+                pushed INTEGER,
+                published_at TEXT NOT NULL,
+                receipt_json TEXT NOT NULL
+            );
+            """)
+        connection.execute(
+            f"INSERT INTO proposals ({','.join(proposal)}) "
+            f"VALUES ({','.join(':' + key for key in proposal)})",
+            proposal,
+        )
+        connection.execute(
+            f"INSERT INTO versions ({','.join(version)}) "
+            f"VALUES ({','.join(':' + key for key in version)})",
+            version,
+        )
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='reviews'"
+            ).fetchone()
+            is None
+        )
+
+    AuthoringStore(sqlite_path, receipts_path)
+
+    with sqlite3.connect(sqlite_path) as connection:
+        connection.row_factory = sqlite3.Row
+        saved_proposal = dict(
+            connection.execute(
+                "SELECT * FROM proposals WHERE proposal_id=?",
+                (proposal["proposal_id"],),
+            ).fetchone()
+        )
+        saved_version = dict(
+            connection.execute(
+                "SELECT * FROM versions WHERE proposal_id=?",
+                (proposal["proposal_id"],),
+            ).fetchone()
+        )
+        reviews_table = connection.execute(
+            "SELECT name FROM sqlite_master " "WHERE type='table' AND name='reviews'"
+        ).fetchone()
+
+    assert saved_proposal == proposal
+    assert saved_version == version
+    assert reviews_table["name"] == "reviews"
+
+
+def test_reviews_are_optional_and_ids_must_be_unique(tmp_path: Path) -> None:
+    optional = _service(tmp_path / "optional")
+    assert optional.config.reviews is None
+    assert optional.review_vocabularies() == {"items": [], "total": 0}
+    assert optional.review_properties()["items"] == []
+
+    service, _, _ = _review_service(tmp_path / "configured")
+    raw = service.config.model_dump(mode="json")
+    raw["reviews"]["vocabulary_sources"][0]["document_id"] = "uo"
+    with pytest.raises(ValueError, match="review IDs must be unique"):
+        AuthoringConfig.model_validate(raw)
+
+    incomplete = optional.config.model_dump(mode="json")
+    incomplete["reviews"] = {"vocabulary_sources": []}
+    with pytest.raises(ValueError, match="frontmatter_inventory"):
+        AuthoringConfig.model_validate(incomplete)
+
+
+def test_review_lists_use_one_batch_lookup_per_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _, _ = _review_service(tmp_path)
+    collections: list[str] = []
+
+    def reviews(collection: str) -> dict[str, dict[str, object]]:
+        collections.append(collection)
+        return {}
+
+    monkeypatch.setattr(service.store, "reviews", reviews)
+
+    assert service.review_vocabularies()["total"] == 1
+    assert service.review_properties()["total"] == 2
+    assert collections == ["vocabulary", "property"]
+
+
+def test_review_get_put_persistence_and_exact_annotations(tmp_path: Path) -> None:
+    from semantica.explorer.routes.ontology_authoring import router
+
+    service, vocabulary_path, inventory_path = _review_service(tmp_path)
+    vocabulary_before = vocabulary_path.read_bytes()
+    inventory_before = inventory_path.read_bytes()
+    app = FastAPI()
+    app.state.ontology_authoring_service = service
+    app.include_router(router)
+    client = TestClient(app)
+
+    vocabularies = client.get("/api/ontology/authoring/reviews/vocabularies")
+    assert vocabularies.status_code == 200
+    vocabulary = vocabularies.json()["items"][0]
+    assert vocabulary["document_id"] == "obsidian-review-vocabulary"
+    assert vocabulary["label"] == "Review vocabulary"
+    assert vocabulary["comment"] == "Read-only Obsidian candidate."
+    assert vocabulary["local_only"] is True
+    term_ids = {item["item_id"] for item in vocabulary["terms"]}
+    assert f"{NAMESPACE}InSchemeValue" in term_ids
+    assert f"{NAMESPACE}SchemeLessValue" in term_ids
+    scheme_less = next(
+        item
+        for item in vocabulary["terms"]
+        if item["item_id"] == f"{NAMESPACE}SchemeLessValue"
+    )
+    assert scheme_less["term_kind"] is None
+    assert scheme_less["notations"] == ["Scheme-less"]
+
+    properties = client.get("/api/ontology/authoring/reviews/properties")
+    assert properties.status_code == 200
+    property_payload = properties.json()
+    assert property_payload["schema_version"] == 1
+    assert property_payload["source"]["source_id"] == "obsidian-frontmatter"
+    assert [item["path"] for item in property_payload["items"]] == [
+        "Status",
+        "nested.Value",
+    ]
+    assert property_payload["items"][1]["top_level"] is False
+
+    vocabulary_revision = vocabulary["source_revision"]
+    exact_annotation = "  exact" + chr(10) + "annotation  "
+    for keep, annotation in (
+        (True, "keep"),
+        (False, ""),
+        (None, exact_annotation),
+    ):
+        response = client.put(
+            "/api/ontology/authoring/reviews",
+            json={
+                "collection": "vocabulary",
+                "item_id": "obsidian-review-vocabulary",
+                "source_revision": vocabulary_revision,
+                "keep": keep,
+                "annotation": annotation,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["keep"] is keep
+        assert response.json()["annotation"] == annotation
+        assert response.json()["stale"] is False
+
+    property_revision = next(
+        item["source_revision"]
+        for item in property_payload["items"]
+        if item["path"] == "nested.Value"
+    )
+    property_response = client.put(
+        "/api/ontology/authoring/reviews",
+        json={
+            "collection": "property",
+            "item_id": "nested.Value",
+            "source_revision": property_revision,
+            "keep": None,
+            "annotation": "Property annotation",
+        },
+    )
+    assert property_response.status_code == 200
+    assert property_response.json()["keep"] is None
+
+    reconstructed = AuthoringService(service.config, tmp_path / "authoring.json")
+    saved_vocabulary = reconstructed.review_vocabularies()["items"][0]["review"]
+    assert saved_vocabulary["keep"] is None
+    assert saved_vocabulary["annotation"] == exact_annotation
+    saved_property = next(
+        item
+        for item in reconstructed.review_properties()["items"]
+        if item["path"] == "nested.Value"
+    )["review"]
+    assert saved_property["annotation"] == "Property annotation"
+
+    assert vocabulary_path.read_bytes() == vocabulary_before
+    assert inventory_path.read_bytes() == inventory_before
+    assert service.proposals(None, None)["total"] == 0
+    assert list(Path(service.config.storage.outbox_path).iterdir()) == []
+
+
+def test_review_rejects_stale_unknown_nul_and_property_keep(tmp_path: Path) -> None:
+    from semantica.explorer.routes.ontology_authoring import router
+
+    service, vocabulary_path, _ = _review_service(tmp_path)
+    app = FastAPI()
+    app.state.ontology_authoring_service = service
+    app.include_router(router)
+    client = TestClient(app)
+
+    vocabulary = client.get("/api/ontology/authoring/reviews/vocabularies").json()[
+        "items"
+    ][0]
+    revision = vocabulary["source_revision"]
+    assert (
+        client.put(
+            "/api/ontology/authoring/reviews",
+            json={
+                "collection": "vocabulary",
+                "item_id": "missing",
+                "source_revision": revision,
+                "keep": None,
+                "annotation": "",
+            },
+        ).status_code
+        == 404
+    )
+    assert (
+        client.put(
+            "/api/ontology/authoring/reviews",
+            json={
+                "collection": "property",
+                "item_id": "Status",
+                "source_revision": next(
+                    item["source_revision"]
+                    for item in service.review_properties()["items"]
+                    if item["path"] == "Status"
+                ),
+                "keep": True,
+                "annotation": "",
+            },
+        ).status_code
+        == 422
+    )
+    with pytest.raises(ValueError, match="NUL"):
+        ReviewUpdate.model_validate(
+            {
+                "collection": "vocabulary",
+                "item_id": "obsidian-review-vocabulary",
+                "source_revision": revision,
+                "keep": None,
+                "annotation": "bad" + chr(0),
+            }
+        )
+
+    saved = client.put(
+        "/api/ontology/authoring/reviews",
+        json={
+            "collection": "vocabulary",
+            "item_id": "obsidian-review-vocabulary",
+            "source_revision": revision,
+            "keep": True,
+            "annotation": "before change",
+        },
+    )
+    assert saved.status_code == 200
+    vocabulary_path.write_text(
+        vocabulary_path.read_text(encoding="utf-8") + "# source changed" + chr(10),
+        encoding="utf-8",
+    )
+    refreshed = client.get("/api/ontology/authoring/reviews/vocabularies").json()[
+        "items"
+    ][0]
+    assert refreshed["source_revision"] != revision
+    assert refreshed["review"]["stale"] is True
+    stale = client.put(
+        "/api/ontology/authoring/reviews",
+        json={
+            "collection": "vocabulary",
+            "item_id": "obsidian-review-vocabulary",
+            "source_revision": revision,
+            "keep": False,
+            "annotation": "stale",
+        },
+    )
+    assert stale.status_code == 409
+
+
+def test_property_revision_tracks_only_the_exact_field_record(tmp_path: Path) -> None:
+    from semantica.explorer.routes.ontology_authoring import router
+
+    service, _, inventory_path = _review_service(tmp_path)
+    app = FastAPI()
+    app.state.ontology_authoring_service = service
+    app.include_router(router)
+    client = TestClient(app)
+
+    initial = client.get("/api/ontology/authoring/reviews/properties").json()
+    initial_inventory_revision = initial["source_revision"]
+    initial_field = next(
+        item for item in initial["items"] if item["path"] == "nested.Value"
+    )
+    field_revision = initial_field["source_revision"]
+    saved = client.put(
+        "/api/ontology/authoring/reviews",
+        json={
+            "collection": "property",
+            "item_id": "nested.Value",
+            "source_revision": field_revision,
+            "keep": None,
+            "annotation": "Initial annotation",
+        },
+    )
+    assert saved.status_code == 200
+
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory["source"]["observed_at"] = "2026-08-02T12:00:00.123456-07:00"
+    inventory_path.write_text(
+        json.dumps(inventory, ensure_ascii=False), encoding="utf-8"
+    )
+    metadata_changed = client.get("/api/ontology/authoring/reviews/properties").json()
+    metadata_field = next(
+        item for item in metadata_changed["items"] if item["path"] == "nested.Value"
+    )
+    assert metadata_changed["source_revision"] != initial_inventory_revision
+    assert metadata_field["source_revision"] == field_revision
+    assert metadata_field["review"]["stale"] is False
+    after_metadata = client.put(
+        "/api/ontology/authoring/reviews",
+        json={
+            "collection": "property",
+            "item_id": "nested.Value",
+            "source_revision": field_revision,
+            "keep": None,
+            "annotation": "Metadata changed only",
+        },
+    )
+    assert after_metadata.status_code == 200
+
+    nested_field = next(
+        field for field in inventory["fields"] if field["path"] == "nested.Value"
+    )
+    nested_field["occurrences"] = 20
+    inventory_path.write_text(
+        json.dumps(inventory, ensure_ascii=False), encoding="utf-8"
+    )
+    field_changed = client.get("/api/ontology/authoring/reviews/properties").json()
+    changed_field = next(
+        item for item in field_changed["items"] if item["path"] == "nested.Value"
+    )
+    assert changed_field["source_revision"] != field_revision
+    assert changed_field["review"]["stale"] is True
+    stale = client.put(
+        "/api/ontology/authoring/reviews",
+        json={
+            "collection": "property",
+            "item_id": "nested.Value",
+            "source_revision": field_revision,
+            "keep": None,
+            "annotation": "Stale field revision",
+        },
+    )
+    assert stale.status_code == 409
 
 
 def test_entity_query_preserves_full_iri(tmp_path: Path) -> None:
@@ -544,6 +1061,31 @@ class _FakeSession:
         self._graph_revision = 0
         self.events: list[str] = []
 
+    def get_nodes(
+        self,
+        node_type: str | None = None,
+        search: str | None = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, object]], int]:
+        nodes = list(self.graph.nodes.values())
+        if node_type is not None:
+            nodes = [item for item in nodes if item.get("type") == node_type]
+        if search is not None:
+            lowered = search.lower()
+            nodes = [
+                item
+                for item in nodes
+                if lowered in str(item.get("content", "")).lower()
+            ]
+        return nodes[skip : skip + limit], len(nodes)
+
+    def get_edges(
+        self, skip: int = 0, limit: int = 100
+    ) -> tuple[list[dict[str, object]], int]:
+        edges = self.graph.edges
+        return edges[skip : skip + limit], len(edges)
+
     def handle_graph_mutation(
         self, event_type: str, _entity_id: str, _payload: dict[str, object]
     ) -> None:
@@ -560,12 +1102,36 @@ def test_projection_populates_graph_registry_and_skips_unchanged(
         sys.modules, "semantica.explorer.routes.ontology", fake_ontology
     )
 
-    service = _service(tmp_path)
+    service, _, _ = _review_service(tmp_path)
     session = _FakeSession()
     app = SimpleNamespace(state=SimpleNamespace())
     assert service.project_into(app, session) is True
     assert f"{NAMESPACE}item" in session.graph.nodes
+    assert session.graph.nodes[f"{NAMESPACE}Category"]["type"] == "skos:ConceptScheme"
+    assert f"{NAMESPACE}ReviewScheme" not in session.graph.nodes
     assert len(app.state.ontology_registry) == 2
+    assert (
+        "https://uo.karelin.ai/ontology/set/review-source"
+        not in app.state.ontology_registry
+    )
+    assert f"{NAMESPACE}Category" not in app.state.ontology_registry
+
+    from semantica.explorer.routes.vocabulary import router as vocabulary_router
+
+    vocabulary_app = FastAPI()
+    vocabulary_app.state.session = session
+    vocabulary_app.include_router(vocabulary_router)
+    vocabulary_client = TestClient(vocabulary_app)
+    schemes = vocabulary_client.get("/api/vocabulary/schemes")
+    assert schemes.status_code == 200
+    assert f"{NAMESPACE}Category" in {item["uri"] for item in schemes.json()}
+    hierarchy = vocabulary_client.get(
+        "/api/vocabulary/hierarchy",
+        params={"scheme": f"{NAMESPACE}Category"},
+    )
+    assert hierarchy.status_code == 200
+    assert hierarchy.json()[0]["uri"] == f"{NAMESPACE}item"
+
     assert all(
         entry.managed_by_authoring for entry in app.state.ontology_registry.values()
     )

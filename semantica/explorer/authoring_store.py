@@ -114,7 +114,78 @@ class AuthoringStore:
                     published_at TEXT NOT NULL,
                     receipt_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS reviews (
+                    collection TEXT NOT NULL
+                        CHECK (collection IN ('vocabulary', 'property')),
+                    item_id TEXT NOT NULL,
+                    source_revision TEXT NOT NULL,
+                    keep INTEGER CHECK (keep IS NULL OR keep IN (0, 1)),
+                    annotation TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (collection, item_id),
+                    CHECK (collection != 'property' OR keep IS NULL)
+                );
                 """)
+
+    def review(self, collection: str, item_id: str) -> Optional[dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM reviews WHERE collection=? AND item_id=?",
+                (collection, item_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def reviews(self, collection: str) -> dict[str, dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM reviews WHERE collection=? ORDER BY item_id",
+                (collection,),
+            ).fetchall()
+        return {row["item_id"]: dict(row) for row in rows}
+
+    def save_review(
+        self,
+        *,
+        collection: str,
+        item_id: str,
+        source_revision: str,
+        keep: Optional[bool],
+        annotation: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        keep_value = None if keep is None else int(keep)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO reviews (
+                    collection, item_id, source_revision, keep, annotation,
+                    actor, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection, item_id) DO UPDATE SET
+                    source_revision=excluded.source_revision,
+                    keep=excluded.keep,
+                    annotation=excluded.annotation,
+                    actor=excluded.actor,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    collection,
+                    item_id,
+                    source_revision,
+                    keep_value,
+                    annotation,
+                    actor,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        row = self.review(collection, item_id)
+        if row is None:
+            raise RuntimeError(f"review was not persisted: {collection}/{item_id}")
+        return row
 
     def create(self, record: dict[str, Any]) -> dict[str, Any]:
         columns = tuple(record)

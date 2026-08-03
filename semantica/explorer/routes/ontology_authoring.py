@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from ..authoring import (
     AuthoringConfigurationError,
     ProposalCreate,
+    ReviewUpdate,
     SourceConflictError,
 )
 from ..authoring_service import AuthoringService
@@ -116,6 +117,36 @@ def get_entity(
 @router.get("/entities/{term_iri:path}")
 def get_entity_by_path(request: Request, term_iri: str, document_id: str = Query(...)):
     return _get_entity(request, document_id, term_iri)
+
+
+@router.get("/reviews/vocabularies")
+def get_vocabulary_reviews(request: Request):
+    try:
+        return _service(request).review_vocabularies()
+    except AuthoringConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/reviews/properties")
+def get_property_reviews(request: Request):
+    try:
+        return _service(request).review_properties()
+    except AuthoringConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.put("/reviews")
+def update_review(request: Request, body: ReviewUpdate):
+    try:
+        return _service(request).update_review(body)
+    except AuthoringConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except SourceConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/proposals")

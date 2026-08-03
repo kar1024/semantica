@@ -16,20 +16,53 @@ import type {
   ShaclGenerateResponse,
   ShaclShapesResponse,
   ShaclValidationResponse,
+  AuthoringReview,
+  PropertyReviewResponse,
+  ReviewUpdateRequest,
+  VocabularyReviewResponse,
 } from "./types";
 
 const AUTHORING_API = "/api/ontology/authoring";
+
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function normalizeApiDetail(detail: unknown): string | null {
+  if (typeof detail === "string") return detail.trim() ? detail : null;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => normalizeApiDetail(item))
+      .filter((item): item is string => item !== null);
+    return messages.length ? messages.join("; ") : null;
+  }
+  if (typeof detail !== "object" || detail === null) return null;
+  const record = detail as Record<string, unknown>;
+  if (typeof record.msg !== "string" || !record.msg.trim()) return null;
+  const location = Array.isArray(record.loc)
+    ? record.loc.filter((part): part is string | number => typeof part === "string" || typeof part === "number").join(".")
+    : "";
+  return location ? `${location}: ${record.msg}` : record.msg;
+}
 
 export async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let detail = `Request failed with status ${response.status}`;
     try {
-      const body = await response.json();
-      detail = body.detail || detail;
+      const body: unknown = await response.json();
+      if (typeof body === "object" && body !== null && "detail" in body) {
+        detail = normalizeApiDetail((body as Record<string, unknown>).detail) ?? detail;
+      }
     } catch {
-      // Keep the generic HTTP detail.
+      // Keep the generic HTTP detail when the response is not JSON.
     }
-    throw new Error(detail);
+    throw new ApiError(detail, response.status);
   }
   const data = await response.json();
   return data as T;
@@ -146,6 +179,29 @@ export async function runProposalAction(
   );
 }
 
+export async function loadVocabularyReviews(signal?: AbortSignal): Promise<VocabularyReviewResponse> {
+  return parseResponse<VocabularyReviewResponse>(
+    await fetch(`${AUTHORING_API}/reviews/vocabularies`, { signal }),
+  );
+}
+
+export async function loadPropertyReviews(signal?: AbortSignal): Promise<PropertyReviewResponse> {
+  return parseResponse<PropertyReviewResponse>(
+    await fetch(`${AUTHORING_API}/reviews/properties`, { signal }),
+  );
+}
+
+export async function saveAuthoringReview(
+  payload: ReviewUpdateRequest,
+): Promise<AuthoringReview> {
+  return parseResponse<AuthoringReview>(
+    await fetch(`${AUTHORING_API}/reviews`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
 export async function loadOntologyRegistry(): Promise<OntologyEntry[]> {
   return parseResponse<OntologyEntry[]>(await fetch("/api/ontology/registry"));
 }

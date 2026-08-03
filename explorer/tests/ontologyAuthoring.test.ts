@@ -22,12 +22,60 @@ import {
   toProposalTermPayload,
 } from "../src/workspaces/OntologyWorkspace/authoringModel.ts";
 import { ProposalReceiptDetails } from "../src/workspaces/OntologyWorkspace/ProposalReview.tsx";
-import { loadAuthoringEntity } from "../src/workspaces/OntologyWorkspace/api.ts";
-import type { ProposalReceipt, RdfAssertion } from "../src/workspaces/OntologyWorkspace/types.ts";
+import {
+  ApiError,
+  loadAuthoringEntity,
+  loadPropertyReviews,
+  loadVocabularyReviews,
+  normalizeApiDetail,
+  saveAuthoringReview,
+} from "../src/workspaces/OntologyWorkspace/api.ts";
+import { OntologyWorkspace } from "../src/workspaces/OntologyWorkspace/index.tsx";
+import {
+  clearReviewDraft,
+  hasReviewDrafts,
+  readPropertyReviewDraft,
+  readVocabularyReviewDraft,
+  reapplyReviewDraft,
+  reviewDraftKey,
+  reviewDraftMatchesSource,
+  writeReviewDraft,
+} from "../src/workspaces/OntologyWorkspace/reviewDrafts.ts";
+import {
+  nextReviewItemId,
+  propertyReviewCounts,
+  propertyReviewRequest,
+  propertyReviewStatus,
+  vocabularyReviewCounts,
+  vocabularyReviewStatus,
+} from "../src/workspaces/OntologyWorkspace/reviewModel.ts";
+import type {
+  AuthoringReview,
+  PropertyReviewItem,
+  ProposalReceipt,
+  RdfAssertion,
+  VocabularyReviewItem,
+} from "../src/workspaces/OntologyWorkspace/types.ts";
 
 const { createElement } = React;
 const TERM_IRI = "https://uo.karelin.ai/ontology#TestTerm";
 const CUSTOM_PREDICATE = "https://example.test/custom";
+
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length() { return this.values.size; }
+
+  clear() { this.values.clear(); }
+
+  getItem(key: string) { return this.values.get(key) ?? null; }
+
+  key(index: number) { return Array.from(this.values.keys())[index] ?? null; }
+
+  removeItem(key: string) { this.values.delete(key); }
+
+  setItem(key: string, value: string) { this.values.set(key, value); }
+}
 
 function assertion(predicate: string, value: string): RdfAssertion {
   return { subject: TERM_IRI, predicate, object: literalObject(value) };
@@ -129,6 +177,300 @@ test("authoring entity lookup preserves a full IRI in query parameters", async (
   assert.equal(requestUrl.searchParams.get("term_iri"), TERM_IRI);
 });
 
+test("review API clients use the authoring review routes and exact save payload", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = input instanceof Request ? input.url : input.toString();
+    calls.push({ url, init });
+    if (url.endsWith("/reviews/vocabularies")) {
+      return new Response(JSON.stringify({ items: [], total: 0 }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    }
+    if (url.endsWith("/reviews/properties")) {
+      return new Response(JSON.stringify({
+        schema_version: 1,
+        source: null,
+        source_revision: "inventory-revision",
+        items: [],
+        total: 0,
+      }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    }
+    return new Response(JSON.stringify({
+      collection: "property",
+      item_id: "fileClass",
+      source_revision: "inventory-revision",
+      keep: null,
+      annotation: "Exact annotation",
+      actor: "alex",
+      created_at: "2026-08-02T12:00:00Z",
+      updated_at: "2026-08-02T12:00:00Z",
+      stale: false,
+    }), {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    const vocabularies = await loadVocabularyReviews();
+    const properties = await loadPropertyReviews();
+    const review = await saveAuthoringReview({
+      collection: "property",
+      item_id: "fileClass",
+      source_revision: "inventory-revision",
+      keep: null,
+      annotation: "Exact annotation",
+    });
+
+    assert.equal(vocabularies.total, 0);
+    assert.equal(properties.source_revision, "inventory-revision");
+    assert.equal(review.annotation, "Exact annotation");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(new URL(calls[0]!.url, "https://semantica.test").pathname, "/api/ontology/authoring/reviews/vocabularies");
+  assert.equal(new URL(calls[1]!.url, "https://semantica.test").pathname, "/api/ontology/authoring/reviews/properties");
+  assert.equal(new URL(calls[2]!.url, "https://semantica.test").pathname, "/api/ontology/authoring/reviews");
+  assert.equal(calls[2]!.init?.method, "PUT");
+  assert.deepEqual(JSON.parse(String(calls[2]!.init?.body)), {
+    collection: "property",
+    item_id: "fileClass",
+    source_revision: "inventory-revision",
+    keep: null,
+    annotation: "Exact annotation",
+  });
+});
+
+test("review API preserves source revision conflict status", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    detail: [{
+      loc: ["body", "source_revision"],
+      msg: "source revision changed: expected old, current new",
+      type: "value_error",
+    }],
+  }), {
+    headers: { "content-type": "application/json" },
+    status: 409,
+  });
+
+  try {
+    await assert.rejects(
+      saveAuthoringReview({
+        collection: "vocabulary",
+        item_id: "axis",
+        source_revision: "old",
+        keep: true,
+        annotation: "",
+      }),
+      (error: unknown) => {
+        assert(error instanceof ApiError);
+        assert.equal(error.status, 409);
+        assert.match(error.message, /source revision changed/);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("FastAPI string and validation-array details normalize to readable errors", () => {
+  assert.equal(normalizeApiDetail("source revision changed"), "source revision changed");
+  assert.equal(
+    normalizeApiDetail([
+      { loc: ["body", "source_revision"], msg: "source revision changed", type: "value_error" },
+      { loc: ["body", "annotation"], msg: "annotation is invalid", type: "value_error" },
+    ]),
+    "body.source_revision: source revision changed; body.annotation: annotation is invalid",
+  );
+  assert.equal(normalizeApiDetail([]), null);
+});
+
+test("review drafts retain source revisions and require explicit reapply after mismatch", () => {
+  const globalWithWindow = globalThis as typeof globalThis & { window?: Window };
+  const previousWindow = globalWithWindow.window;
+  const storage = new MemoryStorage();
+
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { sessionStorage: storage },
+    });
+    writeReviewDraft({
+      collection: "vocabulary",
+      item_id: "axis/one",
+      source_revision: "axis-revision-a",
+      keep: true,
+      annotation: "Vocabulary draft",
+    });
+    writeReviewDraft({
+      collection: "property",
+      item_id: "fileClass",
+      source_revision: "property-revision-a",
+      annotation: "Property draft",
+    });
+
+    assert.equal(reviewDraftKey("vocabulary", "axis/one"), "semantica:ontology-review-draft:vocabulary:axis%2Fone");
+    assert.deepEqual(readVocabularyReviewDraft("axis/one"), {
+      collection: "vocabulary",
+      item_id: "axis/one",
+      source_revision: "axis-revision-a",
+      keep: true,
+      annotation: "Vocabulary draft",
+    });
+    assert.equal(readPropertyReviewDraft("fileClass")?.annotation, "Property draft");
+    const storedVocabularyDraft = readVocabularyReviewDraft("axis/one");
+    assert(storedVocabularyDraft);
+    assert.equal(reviewDraftMatchesSource(storedVocabularyDraft, "axis-revision-a"), true);
+    assert.equal(reviewDraftMatchesSource(storedVocabularyDraft, "axis-revision-b"), false);
+    const reapplied = reapplyReviewDraft(storedVocabularyDraft, "axis-revision-b");
+    assert.deepEqual(reapplied, {
+      ...storedVocabularyDraft,
+      source_revision: "axis-revision-b",
+    });
+    assert.equal(storedVocabularyDraft.source_revision, "axis-revision-a");
+    assert.equal(hasReviewDrafts(), true);
+
+    clearReviewDraft("vocabulary", "axis/one");
+    assert.equal(readVocabularyReviewDraft("axis/one"), null);
+    assert.equal(hasReviewDrafts(), true);
+    clearReviewDraft("property", "fileClass");
+    assert.equal(hasReviewDrafts(), false);
+  } finally {
+    if (previousWindow === undefined) delete globalWithWindow.window;
+    else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+  }
+});
+
+test("stale reviews remain exclusive and property saves use the item revision", () => {
+  const makeReview = (
+    collection: "vocabulary" | "property",
+    itemId: string,
+    keep: boolean | null,
+    annotation: string,
+    stale: boolean,
+  ): AuthoringReview => ({
+    collection,
+    item_id: itemId,
+    source_revision: "saved-revision",
+    keep,
+    annotation,
+    actor: "alex",
+    created_at: "2026-08-02T12:00:00Z",
+    updated_at: "2026-08-02T12:00:00Z",
+    stale,
+  });
+  const vocabulary = (
+    itemId: string,
+    review: AuthoringReview | null,
+  ): VocabularyReviewItem => ({
+    collection: "vocabulary",
+    item_id: itemId,
+    document_id: itemId,
+    source_path: `${itemId}.ttl`,
+    ontology_iri: `https://example.test/${itemId}`,
+    label: itemId,
+    comment: null,
+    source_revision: `${itemId}-current-revision`,
+    local_only: true,
+    terms: [],
+    review,
+  });
+  const property = (
+    itemId: string,
+    review: AuthoringReview | null,
+  ): PropertyReviewItem => ({
+    collection: "property",
+    item_id: itemId,
+    source_revision: `${itemId}-current-revision`,
+    path: itemId,
+    top_level: true,
+    occurrences: 1,
+    value_types: { string: 1 },
+    explicit_property_iris: [],
+    review,
+  });
+
+  const vocabularies = [
+    vocabulary("unreviewed", null),
+    vocabulary("keep", makeReview("vocabulary", "keep", true, "", false)),
+    vocabulary("remove", makeReview("vocabulary", "remove", false, "", false)),
+    vocabulary("stale", makeReview("vocabulary", "stale", true, "", true)),
+  ];
+  const properties = [
+    property("empty", null),
+    property("blank", makeReview("property", "blank", null, "   ", false)),
+    property("annotated", makeReview("property", "annotated", null, "Current", false)),
+    property("stale", makeReview("property", "stale", null, "Old", true)),
+  ];
+
+  assert.deepEqual(vocabularyReviewCounts(vocabularies), {
+    all: 4,
+    unreviewed: 1,
+    keep: 1,
+    doNotKeep: 1,
+    stale: 1,
+  });
+  assert.deepEqual(propertyReviewCounts(properties), {
+    all: 4,
+    noAnnotation: 2,
+    hasAnnotation: 1,
+    stale: 1,
+  });
+  assert.equal(vocabularyReviewStatus(vocabularies[3]!), "stale");
+  assert.equal(propertyReviewStatus(properties[1]!), "no-annotation");
+  assert.equal(propertyReviewStatus(properties[3]!), "stale");
+  assert.equal(nextReviewItemId(vocabularies, "keep", (item) => vocabularyReviewStatus(item) === "unreviewed"), "unreviewed");
+  assert.deepEqual(propertyReviewRequest(properties[2]!, "Updated"), {
+    collection: "property",
+    item_id: "annotated",
+    source_revision: "annotated-current-revision",
+    keep: null,
+    annotation: "Updated",
+  });
+});
+test("ontology review tabs accept direct ontologyTab links", () => {
+  const globalWithWindow = globalThis as typeof globalThis & { window?: Window };
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const previousWindow = globalWithWindow.window;
+  const previousReact = reactGlobal.React;
+  reactGlobal.React = React;
+
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: { search: "?ontologyTab=vocabularies", href: "https://semantica.test/?ontologyTab=vocabularies" },
+        history: { replaceState() {} },
+      },
+    });
+    const vocabularyMarkup = renderToStaticMarkup(createElement(OntologyWorkspace));
+    assert.match(vocabularyMarkup, /Vocabularies/);
+    assert.match(vocabularyMarkup, /Properties/);
+    assert.match(vocabularyMarkup, /role="tablist"/);
+    assert.match(vocabularyMarkup, /role="tab"/);
+    assert.match(vocabularyMarkup, /role="tabpanel"/);
+    assert.match(vocabularyMarkup, /Loading configured vocabularies/);
+
+    globalWithWindow.window!.location.search = "?ontologyTab=properties";
+    const propertyMarkup = renderToStaticMarkup(createElement(OntologyWorkspace));
+    assert.match(propertyMarkup, /Loading frontmatter properties/);
+  } finally {
+    if (previousWindow === undefined) delete globalWithWindow.window;
+    else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+    if (previousReact === undefined) delete reactGlobal.React;
+    else reactGlobal.React = previousReact;
+  }
+});
+
 test("proposal payload conversion uses backend assertion object kind and source ownership", () => {
   const assertions = newTermAssertions(TERM_IRI, "class");
   const payload = toProposalTermPayload(TERM_IRI, "class", "src/domain.ttl", assertions);
@@ -200,7 +542,7 @@ test("application navigation retains every workspace and ontology deep links", a
   reactGlobal.React = React;
 
   try {
-    const [{ default: App }, { initialWorkspaceFromSearch, withoutOntologyParams }] = await Promise.all([
+    const [{ default: App }, { initialWorkspaceFromSearch, ontologyReviewItemFromSearch, withoutOntologyParams }] = await Promise.all([
       import("../src/App.tsx"),
       import("../src/ontologyRouteState.ts"),
     ]);
@@ -219,9 +561,13 @@ test("application navigation retains every workspace and ontology deep links", a
     assert.match(markup, /Navigate knowledge/);
     assert.equal(initialWorkspaceFromSearch(""), "welcome");
     assert.equal(initialWorkspaceFromSearch("?ontologyTab=health"), "ontology-hub");
+    assert.equal(initialWorkspaceFromSearch("?ontologyTab=vocabularies"), "ontology-hub");
+    assert.equal(initialWorkspaceFromSearch("?ontologyTab=properties"), "ontology-hub");
+    assert.equal(initialWorkspaceFromSearch("?ontologyReviewItem=fileClass"), "ontology-hub");
     assert.equal(initialWorkspaceFromSearch(`?ontologyEntity=${encodeURIComponent(TERM_IRI)}`), "ontology-hub");
+    assert.equal(ontologyReviewItemFromSearch("?ontologyTab=properties&ontologyReviewItem=FileClass%2Fstatus"), "FileClass/status");
     assert.equal(
-      withoutOntologyParams(`https://semantica.test/?keep=1&ontologyTab=health&ontologyEntity=${encodeURIComponent(TERM_IRI)}#anchor`),
+      withoutOntologyParams(`https://semantica.test/?keep=1&ontologyTab=health&ontologyEntity=${encodeURIComponent(TERM_IRI)}&ontologyReviewItem=fileClass#anchor`),
       "/?keep=1#anchor",
     );
     assert.equal(withoutOntologyParams("https://semantica.test/?ontologyTab"), "/");

@@ -332,3 +332,88 @@ export interface ShaclValidationResponse {
   violations: ShaclViolation[];
   report_text?: string;
 }
+
+export type ReviewCollection = "vocabulary" | "property";
+
+export interface AuthoringReview {
+  collection: ReviewCollection;
+  item_id: string;
+  source_revision: string;
+  keep: boolean | null;
+  annotation: string;
+  actor: string;
+  created_at: string;
+  updated_at: string;
+  stale: boolean;
+}
+
+export interface VocabularyReviewTerm {
+  item_id: string;
+  term_iri: string;
+  term_kind: OntologyTermKind | null;
+  label: string;
+  labels: string[];
+  comment: string | null;
+  notations: string[];
+  in_schemes: string[];
+  rdf_types: string[];
+}
+
+export interface VocabularyReviewItem {
+  collection: "vocabulary";
+  item_id: string;
+  document_id: string;
+  source_path: string;
+  ontology_iri: string;
+  label: string;
+  comment: string | null;
+  source_revision: string;
+  local_only: true;
+  terms: VocabularyReviewTerm[];
+  review: AuthoringReview | null;
+}
+
+export interface VocabularyReviewResponse {
+  items: VocabularyReviewItem[];
+  total: number;
+}
+
+export interface FrontmatterInventorySource {
+  source_id: string;
+  vault_path: string;
+  observed_at: string;
+  notes_scanned: number;
+  frontmatter_notes: number;
+  parse_failures: number;
+  excluded_path_segments: string[];
+  mapping_source_path: string;
+  mapping_source_revision: string;
+}
+
+export interface PropertyReviewItem {
+  collection: "property";
+  item_id: string;
+  source_revision: string;
+  path: string;
+  top_level: boolean;
+  occurrences: number;
+  value_types: Record<string, number>;
+  explicit_property_iris: string[];
+  review: AuthoringReview | null;
+}
+
+export interface PropertyReviewResponse {
+  schema_version: 1 | null;
+  source: FrontmatterInventorySource | null;
+  source_revision: string | null;
+  items: PropertyReviewItem[];
+  total: number;
+}
+
+export interface ReviewUpdateRequest {
+  collection: ReviewCollection;
+  item_id: string;
+  source_revision: string;
+  keep: boolean | null;
+  annotation: string;
+}

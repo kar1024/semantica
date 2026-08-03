@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One canonical UO document with local-only reference ontologies for browsing
   and mapping; Hindsight and OpenViking remain evidence sources, while
   Obsidian, FileClasses, and classifiers remain consumers.
+- Local-only review of 12 Obsidian vocabulary source snapshots, with exact
+  term inspection, Keep / Do not keep decisions, annotations, per-source
+  revisions, and session-scoped unsaved drafts.
+- Exact case-sensitive Obsidian frontmatter property review, including
+  occurrence and YAML-kind counts, explicit UO property mappings,
+  per-property revisions, annotations, and stale-review handling.
 
 ### Fixed - [Claude] - 2026-08-02
 
@@ -24,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Vocabulary Browser navigation while retaining Ontology Hub and its deep links.
 - Authoring entity links now pass full IRIs as query parameters so the
   `https://` authority delimiter is preserved during detail lookup.
-- SKOS concept schemes remain in vocabulary surfaces and are no longer also
+- SKOS concept schemes, including UO vocabulary classes modeled as subclasses
+  of `skos:ConceptScheme`, remain in vocabulary surfaces and are no longer also
   presented as peer ontologies in the ontology registry.
 
 ### Added

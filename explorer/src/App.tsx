@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import { initialWorkspaceFromSearch } from './ontologyRouteState';
+import { useReviewDraftUnloadWarning } from './workspaces/OntologyWorkspace/reviewDrafts';
 
 const DecisionWorkspace = lazy(() => import('./workspaces/DecisionWorkspace/DecisionWorkspace').then((module) => ({ default: module.DecisionWorkspace })));
 const DiffMergeWorkspace = lazy(() => import('./workspaces/DiffMergeWorkspace/DiffMergeWorkspace').then((module) => ({ default: module.DiffMergeWorkspace })));
@@ -1750,6 +1751,7 @@ function WelcomeScreen({
 }
 
 export default function App() {
+  useReviewDraftUnloadWarning();
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(() =>
     typeof window === 'undefined' ? 'welcome' : initialWorkspaceFromSearch(window.location.search),
   );
