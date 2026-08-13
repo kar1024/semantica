@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - [Claude] - 2026-08-13
+
+- Restored the Ontology Hub Registry and Alignments tabs dropped by the
+  authoring rework, and derived the tab bar from a per-tab record so a missing
+  menu entry fails the TypeScript build.
+
 ### Added - [Claude] - 2026-08-02
 
 - A source-aware ontology authoring workspace for canonical UO terms, including

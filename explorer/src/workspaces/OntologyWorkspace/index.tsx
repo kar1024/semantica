@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import {
+  BookMarked,
   Braces,
+  GitMerge,
   HeartPulse,
   Layers,
   Shield,
@@ -31,14 +33,17 @@ export type OntologyHubTab =
   | "health"
   | "shacl";
 
-const TABS: { id: OntologyHubTab; label: string; icon: typeof Sliders }[] = [
-  { id: "editor", label: "Author", icon: Sliders },
-  { id: "vocabularies", label: "Vocabularies", icon: Tags },
-  { id: "properties", label: "Properties", icon: Braces },
-  { id: "versions", label: "Proposals", icon: Layers },
-  { id: "health", label: "Health", icon: HeartPulse },
-  { id: "shacl", label: "SHACL", icon: Shield },
-];
+const TAB_DEFS: Record<OntologyHubTab, { label: string; icon: typeof Sliders }> = {
+  registry: { label: "Registry", icon: BookMarked },
+  editor: { label: "Author", icon: Sliders },
+  vocabularies: { label: "Vocabularies", icon: Tags },
+  properties: { label: "Properties", icon: Braces },
+  versions: { label: "Proposals", icon: Layers },
+  alignments: { label: "Alignments", icon: GitMerge },
+  health: { label: "Health", icon: HeartPulse },
+  shacl: { label: "SHACL", icon: Shield },
+};
+const TABS = (Object.keys(TAB_DEFS) as OntologyHubTab[]).map((id) => ({ id, ...TAB_DEFS[id] }));
 
 function readTabParam(): OntologyHubTab {
   try {
