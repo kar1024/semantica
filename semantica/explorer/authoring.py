@@ -689,10 +689,10 @@ def _load_canonical(
             ) from exc
         parts.append((relative, graph))
         combined += graph
-    ontology_iri, _ = _ontology_identity(combined)
-    if ontology_iri != config.namespace:
+    ontology_iri = config.namespace
+    if (URIRef(ontology_iri), RDF.type, OWL.Ontology) not in combined:
         raise AuthoringConfigurationError(
-            f"canonical owl:Ontology {ontology_iri!r} does not match canonical.namespace {config.namespace!r}"
+            f"canonical.namespace {ontology_iri!r} must identify an explicitly declared owl:Ontology"
         )
     if any(
         isinstance(subject, BNode) or isinstance(obj, BNode)
