@@ -198,7 +198,7 @@ function IriListField({
   );
 }
 
-function LiteralAssertionRows({
+export function LiteralAssertionRows({
   title,
   assertions,
   predicates,

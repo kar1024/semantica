@@ -14,6 +14,7 @@ import { AlignmentsTab } from "./AlignmentsTab";
 import { HealthTab } from "./HealthTab";
 import { OntologyManager } from "./OntologyManager";
 import { OntologyEditor } from "./OntologyEditor";
+import { StoredOntology } from "./StoredOntology";
 import { PropertyReviewTab, VocabularyReviewTab } from "./ReviewTabs";
 import { ShaclStudio } from "./ShaclStudio";
 import { VersionsTab } from "./VersionsTab";
@@ -24,6 +25,7 @@ import {
 } from "../../ontologyRouteState";
 
 export type OntologyHubTab =
+  | "stored"
   | "registry"
   | "editor"
   | "versions"
@@ -34,6 +36,7 @@ export type OntologyHubTab =
   | "shacl";
 
 const TAB_DEFS: Record<OntologyHubTab, { label: string; icon: typeof Sliders }> = {
+  stored: { label: "Stored ontologies", icon: BookMarked },
   registry: { label: "Registry", icon: BookMarked },
   editor: { label: "Author", icon: Sliders },
   vocabularies: { label: "Vocabularies", icon: Tags },
@@ -53,7 +56,7 @@ function readTabParam(): OntologyHubTab {
   } catch {
     // Ignore browser URL access during server rendering.
   }
-  return "editor";
+  return "stored";
 }
 
 function writeTabParam(tab: OntologyHubTab) {
@@ -108,6 +111,8 @@ export function OntologyWorkspace({ onJumpToGraphNode }: OntologyWorkspaceProps)
 
   const renderTab = () => {
     switch (activeTab) {
+      case "stored":
+        return <StoredOntology />;
       case "registry":
         return <OntologyManager />;
       case "editor":
