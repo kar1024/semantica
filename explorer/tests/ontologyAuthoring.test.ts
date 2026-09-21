@@ -594,9 +594,10 @@ test("application navigation retains every workspace and ontology deep links", a
     assert.equal(initialWorkspaceFromSearch("?ontologyTab=properties"), "ontology-hub");
     assert.equal(initialWorkspaceFromSearch("?ontologyReviewItem=fileClass"), "ontology-hub");
     assert.equal(initialWorkspaceFromSearch(`?ontologyEntity=${encodeURIComponent(TERM_IRI)}`), "ontology-hub");
+    assert.equal(initialWorkspaceFromSearch("?ontologyDataset=jena%3Afixture"), "ontology-hub");
     assert.equal(ontologyReviewItemFromSearch("?ontologyTab=properties&ontologyReviewItem=FileClass%2Fstatus"), "FileClass/status");
     assert.equal(
-      withoutOntologyParams(`https://semantica.test/?keep=1&ontologyTab=health&ontologyEntity=${encodeURIComponent(TERM_IRI)}&ontologyReviewItem=fileClass#anchor`),
+      withoutOntologyParams(`https://semantica.test/?keep=1&ontologyTab=health&ontologyDataset=jena%3Afixture&ontologyEntity=${encodeURIComponent(TERM_IRI)}&ontologyReviewItem=fileClass#anchor`),
       "/?keep=1#anchor",
     );
     assert.equal(withoutOntologyParams("https://semantica.test/?ontologyTab"), "/");

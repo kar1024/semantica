@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { LiteralAssertionRows } from "./OntologyEditor";
 import type { RdfAssertion } from "./types";
+import { ONTOLOGY_DATASET_PARAM, ONTOLOGY_ENTITY_PARAM } from "../../ontologyRouteState";
 import "./stored-ontology.css";
 
 interface Dataset {
@@ -114,9 +115,9 @@ function StoredTermEditor({ dataset, graph, node, save, busy }: {
 
 export function StoredOntology() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(() => new URLSearchParams(window.location.search).get(ONTOLOGY_DATASET_PARAM) ?? "");
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [nodeId, setNodeId] = useState("");
+  const [entity, setEntity] = useState(() => new URLSearchParams(window.location.search).get(ONTOLOGY_ENTITY_PARAM) ?? "");
   const [search, setSearch] = useState("");
   const [view, setView] = useState("terms");
   const [schemes, setSchemes] = useState<Scheme[] | null>(null);
@@ -127,8 +128,15 @@ export function StoredOntology() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const dataset = datasets.find((item) => item.id === selected);
-  const node = graph?.nodes.find((item) => item.id === nodeId);
+  const node = graph?.nodes.find((item) => bare(item.term) === entity);
   const nodes = useMemo(() => graph?.nodes.filter((item) => item.kind !== "literal" && `${item.label} ${item.term}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())) ?? [], [graph, search]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selected) url.searchParams.set(ONTOLOGY_DATASET_PARAM, selected); else url.searchParams.delete(ONTOLOGY_DATASET_PARAM);
+    if (entity) url.searchParams.set(ONTOLOGY_ENTITY_PARAM, entity); else url.searchParams.delete(ONTOLOGY_ENTITY_PARAM);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [selected, entity]);
 
   useEffect(() => {
     const controller = new AbortController(); setCatalogLoading(true);
@@ -136,11 +144,11 @@ export function StoredOntology() {
     return () => controller.abort();
   }, [revision]);
   useEffect(() => {
-    if (!selected) { setLoading(false); return; }
+    if (!dataset) { setLoading(false); return; }
     const controller = new AbortController(); setLoading(true); setError("");
     request<Graph>(`${path(selected)}/graph`, undefined, controller.signal).then(setGraph).catch((error: unknown) => { if (!controller.signal.aborted) setError(failureMessage(error)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [selected, revision]);
+  }, [selected, dataset?.id, revision]);
   useEffect(() => {
     if (!dataset?.capabilities.enums || view !== "enums") return;
     const controller = new AbortController(); setSchemes(null);
@@ -159,18 +167,20 @@ export function StoredOntology() {
   }
   function selectTerm(term: string) {
     const selectedNode = graph?.nodes.find((item) => item.term === term);
-    if (selectedNode) setNodeId(selectedNode.id);
+    if (selectedNode) setEntity(bare(selectedNode.term));
     else setError(`The graph response does not contain ${term}.`);
   }
 
   return <div className="stored-ontology">
-    <div className="stored-toolbar"><label>Stored ontology or RDF knowledge graph<select value={selected} onChange={(event) => { setSelected(event.target.value); setGraph(null); setNodeId(""); setSchemes(null); setView("terms"); setNotice(""); setError(""); }}><option value="">Choose a dataset</option>{datasets.map((item) => <option key={item.id} value={item.id}>{datasetLabel(item, datasets)}</option>)}</select></label><button disabled={loading || catalogLoading || busy} onClick={() => { setError(""); setRevision((value) => value + 1); }}>Refresh</button></div>
+    <div className="stored-toolbar"><label>Stored ontology or RDF knowledge graph<select value={selected} onChange={(event) => { setSelected(event.target.value); setGraph(null); setEntity(""); setSchemes(null); setView("terms"); setNotice(""); setError(""); }}><option value="">Choose a dataset</option>{datasets.map((item) => <option key={item.id} value={item.id}>{datasetLabel(item, datasets)}</option>)}</select></label><button disabled={loading || catalogLoading || busy} onClick={() => { setError(""); setRevision((value) => value + 1); }}>Refresh</button></div>
     {error && <p className="stored-error" role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}{(loading || catalogLoading) && <p role="status">Loading…</p>}
+    {selected && !catalogLoading && !error && !dataset && <p className="stored-error" role="alert">Requested dataset is not an available RDF source: {selected}</p>}
+    {graph && entity && !node && <p className="stored-error" role="alert">Requested term is not present in this source: {entity}</p>}
     {!selected && !loading && !catalogLoading && <p>Open a stored ontology to edit its terms, definitions, assertions and enums.</p>}
     {dataset && graph && <>
       <div className="stored-toolbar"><button aria-pressed={view === "terms"} onClick={() => setView("terms")}>Terms</button>{dataset.capabilities.enums && <button aria-pressed={view === "enums"} onClick={() => setView("enums")}>SKOS enums</button>}<label>Search label or full IRI<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label></div>
       <div className="stored-layout"><aside>
-        {view === "terms" ? nodes.map((item) => <button className="stored-term" key={item.id} aria-pressed={nodeId === item.id} onClick={() => setNodeId(item.id)}><TermText term={item} /></button>) : schemes === null ? <p>Loading enums…</p> : <>{schemes.length === 0 && <p>No SKOS schemes recorded.</p>}{schemes.map((scheme) => <section key={scheme.id}><button className="stored-term" onClick={() => selectTerm(scheme.id)}>{scheme.label}<code>{scheme.id}</code></button>{scheme.values.filter((value) => `${value.label} ${value.id}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).map((value) => <button className="stored-term" key={value.id} onClick={() => selectTerm(value.id)}>{value.label}<code>{value.id}</code></button>)}</section>)}</>}
+        {view === "terms" ? nodes.map((item) => <button className="stored-term" key={item.id} aria-pressed={node?.id === item.id} onClick={() => setEntity(bare(item.term))}><TermText term={item} /></button>) : schemes === null ? <p>Loading enums…</p> : <>{schemes.length === 0 && <p>No SKOS schemes recorded.</p>}{schemes.map((scheme) => <section key={scheme.id}><button className="stored-term" onClick={() => selectTerm(scheme.id)}>{scheme.label}<code>{scheme.id}</code></button>{scheme.values.filter((value) => `${value.label} ${value.id}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).map((value) => <button className="stored-term" key={value.id} onClick={() => selectTerm(value.id)}>{value.label}<code>{value.id}</code></button>)}</section>)}</>}
       </aside><main>{node && <StoredTermEditor key={`${node.id}:${graph.revision}`} dataset={dataset} graph={graph} node={node} save={save} busy={busy || loading} />}
         {dataset.capabilities.edit && <details><summary>{view === "enums" ? "Add SKOS scheme or value" : "Add assertion or new term"}</summary><form onSubmit={(event) => {
           event.preventDefault(); const data = new FormData(event.currentTarget);
