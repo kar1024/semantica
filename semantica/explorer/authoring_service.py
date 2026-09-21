@@ -18,6 +18,7 @@ from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 from rdflib.util import guess_format
 
 from .authoring import (
+    ApprovalDeclaration,
     AuthoringConfig,
     AuthoringConfigurationError,
     FrontmatterInventory,
@@ -985,6 +986,7 @@ class AuthoringService:
             "summary": row["summary"],
             "author": row["actor"],
             "reviewer": row["reviewer"],
+            "approval": json.loads(row["approval_json"]) if row["approval_json"] is not None else None,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "base_revision_id": row["base_revision"],
@@ -1019,7 +1021,7 @@ class AuthoringService:
             self.store.transition(proposal_id, expected="draft", target="proposed")
         )
 
-    def approve(self, proposal_id: str) -> dict[str, Any]:
+    def approve(self, proposal_id: str, declaration: ApprovalDeclaration) -> dict[str, Any]:
         row = self.store.get(proposal_id)
         document = self.document(row["document_id"])
         if row["base_revision"] != document.revision:
@@ -1029,7 +1031,10 @@ class AuthoringService:
                 proposal_id,
                 expected="proposed",
                 target="approved",
-                reviewer=self.config.actor,
+                reviewer=declaration.actor,
+                approval={"actor": declaration.actor, "actor_provenance": "declared",
+                          "approved_at": now_iso(), "proposal_id": proposal_id,
+                          "source_revision": row["base_revision"]},
             )
         )
 

@@ -427,6 +427,21 @@ class TermPayload(BaseModel):
         return self
 
 
+class ApprovalDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str
+
+    @field_validator("actor")
+    @classmethod
+    def validate_actor(cls, value: str) -> str:
+        value = value.strip()
+        parts = value.split(":", 1) if value.startswith("human:") else value.split("/", 1)
+        if "\x00" in value or len(parts) != 2 or not all(part.strip() for part in parts):
+            raise ValueError("Declare human:<id> or <producer>/<version>; this does not authenticate identity")
+        return value
+
+
 class ProposalCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

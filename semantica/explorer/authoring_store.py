@@ -89,6 +89,7 @@ class AuthoringStore:
                     summary TEXT NOT NULL,
                     actor TEXT NOT NULL,
                     reviewer TEXT,
+                    approval_json TEXT,
                     before_json TEXT,
                     after_json TEXT NOT NULL,
                     evidence_json TEXT NOT NULL,
@@ -128,6 +129,9 @@ class AuthoringStore:
                     CHECK (collection != 'property' OR keep IS NULL)
                 );
                 """)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(proposals)")}
+            if "approval_json" not in columns:
+                connection.execute("ALTER TABLE proposals ADD COLUMN approval_json TEXT")
 
     def review(self, collection: str, item_id: str) -> Optional[dict[str, Any]]:
         with self._lock, self._connect() as connection:
@@ -349,16 +353,19 @@ class AuthoringStore:
         target: str,
         reviewer: Optional[str] = None,
         handoff_id: Optional[str] = None,
+        approval: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         timestamp = now_iso()
         with self._lock, self._connect() as connection:
             result = connection.execute(
                 """
                 UPDATE proposals SET state=?, reviewer=COALESCE(?, reviewer),
+                    approval_json=COALESCE(?, approval_json),
                     handoff_id=COALESCE(?, handoff_id), updated_at=?
                 WHERE proposal_id=? AND state=?
                 """,
-                (target, reviewer, handoff_id, timestamp, proposal_id, expected),
+                (target, reviewer, json_dump(approval) if approval is not None else None,
+                 handoff_id, timestamp, proposal_id, expected),
             )
             if result.rowcount != 1:
                 row = connection.execute(

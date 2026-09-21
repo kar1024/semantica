@@ -113,8 +113,10 @@ export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
   const [acting, setActing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [actor, setActor] = useState("");
 
   useEffect(() => {
+    setActor("");
     const controller = new AbortController();
     loadAuthoringProposal(proposalId, controller.signal)
       .then((loaded) => {
@@ -135,7 +137,7 @@ export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
     setActing(true);
     setError("");
     try {
-      const updated = await runProposalAction(proposal.proposal_id, action);
+      const updated = await runProposalAction(proposal.proposal_id, action, actor);
       setProposal(updated);
       onChanged?.(updated);
     } catch (requestError: unknown) {
@@ -143,7 +145,7 @@ export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
     } finally {
       setActing(false);
     }
-  }, [onChanged, proposal]);
+  }, [onChanged, proposal, actor]);
 
   const refresh = useCallback(async () => {
     if (!proposal) return;
@@ -174,7 +176,7 @@ export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: 16 }}>{proposal.summary}</h2>
           <div style={{ marginTop: 5, color: "#6f88a1", fontSize: 10 }}>
-            {proposal.state} · {proposal.author} · {new Date(proposal.created_at).toLocaleString()}
+            {proposal.state} · Recorded author: {proposal.author} (not verified) · {new Date(proposal.created_at).toLocaleString()}
           </div>
           <code style={{ display: "block", marginTop: 5, color: "#526b83", fontSize: 9, overflowWrap: "anywhere" }}>{proposal.proposal_id}</code>
         </div>
@@ -184,7 +186,7 @@ export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
           ) : null}
           {proposal.state === "proposed" ? (
             <>
-              <button type="button" disabled={acting} onClick={() => void act("approve")} style={buttonStyle}><CheckCircle size={11} /> Approve</button>
+              <button type="button" disabled={acting || !actor.trim()} onClick={() => void act("approve")} style={buttonStyle}><CheckCircle size={11} /> Approve</button>
               <button type="button" disabled={acting} onClick={() => void act("reject")} style={buttonStyle}><XCircle size={11} /> Reject</button>
             </>
           ) : null}
@@ -197,6 +199,14 @@ export function ProposalReview({ proposalId, onChanged }: ProposalReviewProps) {
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div style={sectionStyle}>
+        {proposal.state === "proposed" ? <label style={{ display: "grid", gap: 6, fontSize: 11 }}>Approval actor
+          <input aria-label="Approval actor" value={actor} onChange={(event) => setActor(event.target.value)} disabled={acting} placeholder="human:<id> or <producer>/<version>" style={{ padding: 8, color: "#ebf3ff", background: "rgba(0,0,0,0.2)", border: "1px solid rgba(127,208,255,0.2)", borderRadius: 7 }} />
+          <span>Declared, not authenticated. Enter the person or agent making this approval.</span>
+        </label> : proposal.approval ? <div style={{ fontSize: 11 }}>Approval actor: {proposal.approval.actor} · Declared, not authenticated · {new Date(proposal.approval.approved_at).toLocaleString()}</div>
+          : <div style={{ fontSize: 11 }}>{proposal.reviewer ? `Recorded approval attribution: ${proposal.reviewer} (not verified)` : "Approval actor not recorded; identity not verified."}</div>}
       </div>
 
       {error ? <div role="alert" style={{ padding: "9px 16px", color: "#ffb4c2", background: "rgba(255,157,175,0.08)", fontSize: 11 }}>{error}</div> : null}

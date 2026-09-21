@@ -177,6 +177,7 @@ export interface AuthoringProposal {
   summary: string;
   author: string;
   reviewer: string | null;
+  approval: { actor: string; actor_provenance: "declared"; approved_at: string; proposal_id: string; source_revision: string } | null;
   created_at: string;
   updated_at: string;
   base_revision_id: string;

@@ -171,10 +171,12 @@ export async function createAuthoringProposal(
 export async function runProposalAction(
   proposalId: string,
   action: "submit" | "approve" | "reject" | "publish",
+  actor?: string,
 ): Promise<AuthoringProposal> {
   return parseResponse<AuthoringProposal>(
     await fetch(`${AUTHORING_API}/proposals/${encodeURIComponent(proposalId)}/${action}`, {
       method: "POST",
+      ...(action === "approve" ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor }) } : {}),
     }),
   );
 }

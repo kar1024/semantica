@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..authoring import (
+    ApprovalDeclaration,
     AuthoringConfigurationError,
     ProposalCreate,
     ReviewUpdate,
@@ -185,10 +186,10 @@ def create_proposal(request: Request, body: ProposalCreate):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _action(request: Request, proposal_id: str, action: str):
+def _action(request: Request, proposal_id: str, action: str, *args):
     service = _service(request)
     try:
-        return getattr(service, action)(proposal_id)
+        return getattr(service, action)(proposal_id, *args)
     except KeyError as exc:
         raise _not_found(exc) from exc
     except SourceConflictError as exc:
@@ -205,8 +206,8 @@ def submit_proposal(request: Request, proposal_id: str):
 
 
 @router.post("/proposals/{proposal_id}/approve")
-def approve_proposal(request: Request, proposal_id: str):
-    return _action(request, proposal_id, "approve")
+def approve_proposal(request: Request, proposal_id: str, body: ApprovalDeclaration):
+    return _action(request, proposal_id, "approve", body)
 
 
 @router.post("/proposals/{proposal_id}/reject")

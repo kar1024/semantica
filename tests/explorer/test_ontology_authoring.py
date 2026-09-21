@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
 from semantica.explorer import authoring_service as authoring_service_module
-from semantica.explorer.authoring import AuthoringConfig, ProposalCreate, ReviewUpdate
+from semantica.explorer.authoring import ApprovalDeclaration, AuthoringConfig, ProposalCreate, ReviewUpdate
 from semantica.explorer.authoring_service import (
     AuthoringService,
     _payload_from_detail,
@@ -282,7 +282,40 @@ def _existing_request(
 def _approve(service: AuthoringService, request: ProposalCreate) -> dict[str, object]:
     proposal = service.create_proposal(request)
     service.submit(proposal["proposal_id"])
-    return service.approve(proposal["proposal_id"])
+    return service.approve(proposal["proposal_id"], ApprovalDeclaration(actor="Codex/GPT-6"))
+
+
+def test_approval_requires_declaration_and_preserves_receipt(tmp_path: Path) -> None:
+    from semantica.explorer.routes.ontology_authoring import router
+
+    service = _service(tmp_path)
+    original = (tmp_path / "src" / "uo.ttl").read_bytes()
+    proposal = service.create_proposal(_create_request(service, f"{NAMESPACE}DeclaredApproval"))
+    proposal_id = proposal["proposal_id"]
+    service.submit(proposal_id)
+    app = FastAPI()
+    app.state.ontology_authoring_service = service
+    app.include_router(router)
+    client = TestClient(app)
+    path = f"/api/ontology/authoring/proposals/{proposal_id}/approve"
+    spoofed = {"remote-email": "alex@example.test", "who": "human:alex"}
+    for body in ({}, {"actor": " "}, {"actor": "Alex"}, {"actor": "human:"},
+                 {"actor": "Codex/GPT-6", "actor_provenance": "authenticated"}):
+        assert client.post(path, json=body, headers=spoofed).status_code == 422
+    assert service.proposal(proposal_id)["state"] == "proposed"
+    response = client.post(path, json={"actor": "Codex/GPT-6"}, headers=spoofed)
+    assert response.status_code == 200, response.text
+    approved = response.json()
+    assert approved["reviewer"] == "Codex/GPT-6"
+    assert approved["approval"]["actor"] == "Codex/GPT-6"
+    assert approved["approval"]["actor_provenance"] == "declared"
+    assert approved["approval"]["source_revision"] == proposal["base_revision_id"]
+    assert approved["approval"]["approved_at"]
+    assert client.post(path, json={"actor": "human:someone-else"}).status_code == 409
+    reopened = AuthoringService(service.config, service.config_path)
+    assert reopened.proposal(proposal_id)["approval"] == approved["approval"]
+    assert reopened.publish(proposal_id)["approval"] == approved["approval"]
+    assert (tmp_path / "src" / "uo.ttl").read_bytes() == original
 
 
 def test_reviews_table_initialization_preserves_existing_rows(tmp_path: Path) -> None:
@@ -405,6 +438,7 @@ def test_reviews_table_initialization_preserves_existing_rows(tmp_path: Path) ->
             "SELECT name FROM sqlite_master " "WHERE type='table' AND name='reviews'"
         ).fetchone()
 
+    assert saved_proposal.pop("approval_json") is None
     assert saved_proposal == proposal
     assert saved_version == version
     assert reviews_table["name"] == "reviews"
