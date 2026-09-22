@@ -12,6 +12,7 @@ import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +28,13 @@ from semantica.explorer.authoring_service import (
 from semantica.explorer.authoring_store import AuthoringStore
 
 NAMESPACE = "https://uo.karelin.ai/ontology#"
+
+
+@pytest.fixture(autouse=True)
+def publisher_transport(monkeypatch):
+    post = Mock(return_value=Mock())
+    monkeypatch.setattr(authoring_service_module.requests, "post", post)
+    return post
 
 
 def _write_fixture_sources(tmp_path: Path) -> tuple[Path, Path]:
@@ -80,6 +88,7 @@ def _service(
     source_root, reference = _write_fixture_sources(tmp_path)
     payload: dict[str, object] = {
         "actor": "Alex",
+        "publisher": {"url": "https://publisher.test/publish", "timeout_seconds": 30},
         "storage": {
             "sqlite_path": str(tmp_path / "authoring.sqlite3"),
             "outbox_path": str(tmp_path / "outbox"),
@@ -1210,3 +1219,24 @@ def test_real_uo_and_all_five_references(tmp_path: Path) -> None:
     assert service.entities("uo", definitions_missing=True)["total"] == 37
     assert service.entities("uo", deprecated=False)["total"] == 98
     assert service.entities("uo", deprecated=True)["total"] == 2
+
+
+
+def test_publish_calls_configured_publisher_after_durable_handoff(tmp_path, publisher_transport):
+    service = _service(tmp_path)
+    approved = _approve(service, _create_request(service, f"{NAMESPACE}PublisherCallback"))
+    proposal_id = approved["proposal_id"]
+    service.publish(proposal_id)
+    assert (Path(service.config.storage.outbox_path) / f"{proposal_id}.json").is_file()
+    publisher_transport.assert_called_once_with(
+        f"https://publisher.test/publish/{proposal_id}", timeout=30
+    )
+
+
+def test_publisher_unavailable_keeps_requested_proposal_for_retry(tmp_path, publisher_transport):
+    service = _service(tmp_path)
+    approved = _approve(service, _create_request(service, f"{NAMESPACE}PublisherRetry"))
+    publisher_transport.side_effect = authoring_service_module.requests.ConnectionError("unavailable")
+    with pytest.raises(authoring_service_module.requests.ConnectionError):
+        service.publish(approved["proposal_id"])
+    assert service.proposal(approved["proposal_id"])["state"] == "publish_requested"

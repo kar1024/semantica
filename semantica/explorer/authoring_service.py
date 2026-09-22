@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+
+import requests
 import threading
 import uuid
 from dataclasses import dataclass
@@ -1108,4 +1110,9 @@ class AuthoringService:
                 target="approved",
             )
             raise
+        response = requests.post(
+            f"{self.config.publisher.url.rstrip('/')}/{proposal_id}",
+            timeout=self.config.publisher.timeout_seconds,
+        )
+        response.raise_for_status()
         return self.proposal(proposal_id)

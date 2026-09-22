@@ -258,12 +258,12 @@ class AuthoringStore:
                     f"published receipt {receipt_path} requires nonblank commit_sha and pushed=true"
                 )
             if receipt["state"] == "error" and (
-                receipt.get("pushed") is not False
+                not isinstance(receipt.get("pushed"), bool)
                 or not isinstance(receipt.get("message"), str)
                 or not receipt["message"].strip()
             ):
                 raise RuntimeError(
-                    f"error receipt {receipt_path} requires nonblank message and pushed=false"
+                    f"error receipt {receipt_path} requires nonblank message and a pushed status"
                 )
             if "commit_sha" in receipt and (
                 not isinstance(receipt["commit_sha"], str)

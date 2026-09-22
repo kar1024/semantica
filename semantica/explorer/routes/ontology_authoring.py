@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import requests
+
 import os
 from typing import Optional
 
@@ -196,6 +198,8 @@ def _action(request: Request, proposal_id: str, action: str, *args):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProposalTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Ontology publisher failed: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

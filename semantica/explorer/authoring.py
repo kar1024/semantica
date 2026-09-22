@@ -172,11 +172,19 @@ class ConsumerConfig(BaseModel):
         return validate_iri(value, "consumer.href") if value is not None else None
 
 
+class PublisherConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    timeout_seconds: float
+
+
 class AuthoringConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     actor: str
     storage: StorageConfig
+    publisher: PublisherConfig
     canonical: CanonicalConfig
     references: list[ReferenceConfig]
     consumers: list[ConsumerConfig]
