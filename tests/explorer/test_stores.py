@@ -107,6 +107,7 @@ def _config() -> dict:
             "user": "neo4j",
             "password": "not-a-secret",
             "database": "neo4j",
+            "schema": "jena:uo",
         },
     }
 
@@ -121,8 +122,9 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict):
 def test_configuration_names_every_store(tmp_path, monkeypatch) -> None:
     config = _load(tmp_path, monkeypatch, _config())
     assert list(Stores(config).entries) == ["jena:uo", KNOWLEDGE_ID, "neo4j:neo4j"]
-    config = _load(tmp_path, monkeypatch, {**_config(), "fuseki": None})
-    assert list(Stores(config).entries) == ["neo4j:neo4j"]
+    assert config.neo4j.schema_store == "jena:uo"
+    config = _load(tmp_path, monkeypatch, {**_config(), "neo4j": None})
+    assert list(Stores(config).entries) == ["jena:uo", KNOWLEDGE_ID]
 
 
 REFUSALS = {
@@ -137,6 +139,9 @@ REFUSALS = {
     "blank graph": lambda c: c["fuseki"]["datasets"][1].update(graph=""),
     "blank password": lambda c: c["neo4j"].update(password=""),
     "repeated dataset": lambda c: c["fuseki"]["datasets"].append({"dataset": "uo", "graph": None}),
+    "missing schema": lambda c: c["neo4j"].pop("schema"),
+    "schema not a configured store": lambda c: c["neo4j"].update(schema="jena:main_ontology"),
+    "schema without fuseki": lambda c: c.update(fuseki=None),
 }
 
 
@@ -458,7 +463,7 @@ def test_catalog_lists_the_configured_stores(app) -> None:
     ]
     assert items[1]["name"] == "knowledge"
     assert items[1]["graph_iri"] == KNOWLEDGE
-    assert items[2]["capabilities"] == {"edit": False, "enums": False}
+    assert items[2]["capabilities"] == {"edit": True, "enums": False}
 
 
 def test_session_graph_holds_every_loaded_store(app) -> None:

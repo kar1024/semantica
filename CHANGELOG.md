@@ -19,7 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/api/stores` lists the configured stores, reloads them, and edits Fuseki
   assertions with the revision-checked replace the Stored ontologies tab
   already uses. A write re-reads its store and resets the graph, and an open
-  Explore view reloads. Neo4j is read-only.
+  Explore view reloads.
+- Neo4j records are edited from the Explore inspector through
+  `/api/stores/{id}/record`, `/vocabulary` and `/mutate`. The vault owns what
+  load_vault marks in `_vault`, and those properties, their class label and
+  marked relationships are refused with "edit the note". Everything else is
+  Alex's: he adds, changes and removes properties, sets a node's UO class with
+  its label, links nodes by a UO property or a type Neo4j holds, and creates
+  entities as a Stub typed by a UO class. Each write locks its nodes before it
+  checks the record's revision, so a loader commit in between answers 409.
+  `stores.json` names the UO store in the new required `neo4j.schema` key.
 - A store that cannot be reached stays out of Explore and carries its error in
   the catalog and its routes; an invalid configuration file stops startup.
 - A store whose SKOS hierarchy has a cycle, alone or with the other stores, is

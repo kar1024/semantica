@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { Loader2 } from "lucide-react";
 import { graph } from "../../store/graphStore";
 import { GRAPH_THEME, withAlpha } from "./graphTheme";
+import { Neo4jRecordPanel } from "./Neo4jRecordPanel";
 import type { GraphSelectedNodeKind } from "./types";
 
 export type LinkPrediction = {
@@ -364,6 +365,8 @@ export function GraphInspectorPanel({
     ([key]) =>
       !["x","y","valid_from","valid_until","content","source","source_url","pmid","pmids","evidence","provenance","confidence"].includes(key),
   );
+  const stores = Array.isArray(properties.stores) ? (properties.stores as string[]) : [];
+  const neo4jStore = effectiveNodeId.startsWith("neo4j:") ? stores.find((store) => store.startsWith("neo4j:")) : undefined;
 
   return (
     <aside style={{ padding: 24, display: "flex", flexDirection: "column", gap: 18 }}>
@@ -534,26 +537,35 @@ export function GraphInspectorPanel({
         </div>
       </details>
 
-      {/* Properties */}
-      <details className="node-panel-collapse">
-        <summary className="node-panel-summary">Properties</summary>
-        <div className="node-panel-body">
-          {propertyEntries.length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {propertyEntries.map(([key, value]) => (
-                <div key={key} style={propertyCardStyle}>
-                  <div style={{ color: GRAPH_THEME.ui.timeline.playhead, fontSize: 11, marginBottom: 4 }}>{key}</div>
-                  <div style={{ color: GRAPH_THEME.ui.text.body, fontSize: 13, wordBreak: "break-word" }}>
-                    {typeof value === "object" ? JSON.stringify(value) : String(value)}
+      {/* Properties: a Neo4j node shows its stored record, editable where it is Alex's */}
+      {neo4jStore ? (
+        <details className="node-panel-collapse" open>
+          <summary className="node-panel-summary">Neo4j record</summary>
+          <div className="node-panel-body">
+            <Neo4jRecordPanel key={effectiveNodeId} nodeId={effectiveNodeId} storeId={neo4jStore} onFocusNode={onFocusNode} />
+          </div>
+        </details>
+      ) : (
+        <details className="node-panel-collapse">
+          <summary className="node-panel-summary">Properties</summary>
+          <div className="node-panel-body">
+            {propertyEntries.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {propertyEntries.map(([key, value]) => (
+                  <div key={key} style={propertyCardStyle}>
+                    <div style={{ color: GRAPH_THEME.ui.timeline.playhead, fontSize: 11, marginBottom: 4 }}>{key}</div>
+                    <div style={{ color: GRAPH_THEME.ui.text.body, fontSize: 13, wordBreak: "break-word" }}>
+                      {typeof value === "object" ? JSON.stringify(value) : String(value)}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={emptyTextStyle}>No additional properties are attached to this node.</div>
-          )}
-        </div>
-      </details>
+                ))}
+              </div>
+            ) : (
+              <div style={emptyTextStyle}>No additional properties are attached to this node.</div>
+            )}
+          </div>
+        </details>
+      )}
     </aside>
   );
 }
