@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { LiteralAssertionRows } from "./OntologyEditor";
 import type { RdfAssertion } from "./types";
 import { ONTOLOGY_DATASET_PARAM, ONTOLOGY_ENTITY_PARAM } from "../../ontologyRouteState";
+import { useReloadGraph } from "../GraphWorkspace/useLoadGraph";
 import "./stored-ontology.css";
 
 interface Dataset {
@@ -124,6 +125,8 @@ export function StoredOntology() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
+  // Explore is unmounted while this tab is open, so its socket misses RESET_GRAPH; mark its graph stale instead.
+  const reloadGraph = useReloadGraph();
   const [loading, setLoading] = useState(false);
   const dataset = datasets.find((item) => item.id === selected);
   const node = graph?.nodes.find((item) => bare(item.term) === entity);
@@ -159,13 +162,13 @@ export function StoredOntology() {
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await request<{ normalizations?: Array<{ provided: string; stored: string }> }>(`${path(selected)}/triples/replace`, { base_revision: graph.revision, remove, add });
-      setRevision((value) => value + 1); setNotice("Saved to the shared ontology store." + (result.normalizations?.length ? " Stored literal normalization: " + result.normalizations.map((item) => `${item.provided} → ${item.stored}`).join("; ") : "")); return true;
+      void reloadGraph(); setRevision((value) => value + 1); setNotice("Saved to the shared ontology store." + (result.normalizations?.length ? " Stored literal normalization: " + result.normalizations.map((item) => `${item.provided} → ${item.stored}`).join("; ") : "")); return true;
     } catch (error) { setError(failureMessage(error)); return false; }
     finally { setBusy(false); }
   }
   async function refresh() {
     setBusy(true); setError(""); setNotice("");
-    try { await request("/api/stores/reload", {}); setRevision((value) => value + 1); }
+    try { await request("/api/stores/reload", {}); void reloadGraph(); setRevision((value) => value + 1); }
     catch (error) { setError(failureMessage(error)); }
     finally { setBusy(false); }
   }

@@ -25,6 +25,7 @@ from rdflib.namespace import RDF, RDFS, SKOS
 
 from ..graph_store.neo4j_store import Neo4jStore
 from ..utils.exceptions import ProcessingError
+from ..utils.skos import validate_skos_hierarchy
 from .authoring import validate_iri
 from .authoring_service import _compact_iri, replace_session_graph
 from .stores_fuseki import Jena, graph_id, revision, term_text
@@ -38,13 +39,13 @@ _CONSTRAINTS = (
     "WHERE type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS'] AND entityType = 'NODE' "
     "RETURN labelsOrTypes, properties"
 )
-_NODES = (
-    "MATCH (n) RETURN elementId(n) AS element, labels(n) AS labels, "
-    "properties(n) AS properties"
-)
+_NODES = "MATCH (n) RETURN labels(n) AS labels, properties(n) AS properties"
+# Endpoints carry their own labels and properties: the two statements can see different
+# commits of load_vault, so relationships are never joined to nodes by internal id.
 _RELATIONSHIPS = (
-    "MATCH (a)-[r]->(b) RETURN elementId(a) AS source, type(r) AS type, "
-    "properties(r) AS properties, elementId(b) AS target"
+    "MATCH (a)-[r]->(b) RETURN labels(a) AS source_labels, "
+    "properties(a) AS source_properties, type(r) AS type, properties(r) AS properties, "
+    "labels(b) AS target_labels, properties(b) AS target_properties"
 )
 
 
@@ -187,40 +188,43 @@ def rdf_payload(
     return list(nodes.values()), edges
 
 
+def _node_id(
+    keys: dict[str, str], labels: list[str], properties: dict[str, Any]
+) -> tuple[str, str]:
+    """Name a node by its keyed label and key, so ids survive load_vault's rebuilds."""
+    keyed = [label for label in labels if label in keys]
+    if len(keyed) != 1:
+        raise StoreReadError(
+            f"Neo4j node with labels {sorted(labels)} has {len(keyed)} "
+            f"keyed labels; exactly one of {sorted(keys)} is required"
+        )
+    label = keyed[0]
+    if keys[label] not in properties:
+        raise StoreReadError(f"Neo4j {label} node has no {keys[label]}")
+    return label, f"neo4j:{label}:{properties[keys[label]]}"
+
+
 def neo4j_snapshot(
     keys: dict[str, str],
     nodes: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Name each node by its keyed label and key, so ids survive load_vault's rebuilds."""
-    ids: dict[str, str] = {}
     snapshot_nodes: list[dict[str, Any]] = []
     for row in nodes:
-        keyed = [label for label in row["labels"] if label in keys]
-        if len(keyed) != 1:
-            raise StoreReadError(
-                f"Neo4j node with labels {sorted(row['labels'])} has {len(keyed)} "
-                f"keyed labels; exactly one of {sorted(keys)} is required"
-            )
-        label = keyed[0]
-        properties = row["properties"]
-        if keys[label] not in properties:
-            raise StoreReadError(f"Neo4j {label} node has no {keys[label]}")
-        node_id = f"neo4j:{label}:{properties[keys[label]]}"
-        ids[row["element"]] = node_id
+        label, node_id = _node_id(keys, row["labels"], row["properties"])
         snapshot_nodes.append(
             {
                 "id": node_id,
                 "label": label,
                 "labels": sorted(row["labels"]),
-                "properties": properties,
+                "properties": row["properties"],
             }
         )
     snapshot_relationships = [
         {
-            "source": ids[row["source"]],
+            "source": _node_id(keys, row["source_labels"], row["source_properties"])[1],
             "type": row["type"],
-            "target": ids[row["target"]],
+            "target": _node_id(keys, row["target_labels"], row["target_properties"])[1],
             "properties": row["properties"],
         }
         for row in relationships
@@ -324,8 +328,13 @@ class Neo4jDatabase:
             password=config.password,
             database=config.database,
         )
-        self.store.connect()
-        self.key_by_label = self.keys()
+        try:
+            self.store.connect()
+            self.key_by_label = self.keys()
+        except Exception:
+            # connect() opens the driver before it verifies it; a failed start must not leak it.
+            self.store.close()
+            raise
 
     def _read(self, work: Any) -> Any:
         from neo4j.exceptions import DriverError, Neo4jError
@@ -395,6 +404,23 @@ class Stores:
             )
 
 
+def check_hierarchy(stores: Stores, store_id: str, edges: list[dict[str, Any]]) -> None:
+    """Raise ValueError when the store's SKOS hierarchy has a cycle, alone or with the other stores.
+
+    The session graph refuses such a hierarchy, so the store is kept out of it
+    rather than taking down the graph rebuild.
+    """
+    validate_skos_hierarchy(
+        edges,
+        [
+            edge
+            for entry in stores.entries.values()
+            if entry.id != store_id
+            for edge in entry.edges
+        ],
+    )
+
+
 def _read_store(stores: Stores, entry: StoreEntry) -> None:
     try:
         if entry.source == "jena":
@@ -407,8 +433,12 @@ def _read_store(stores: Stores, entry: StoreEntry) -> None:
             snapshot = stores.neo4j.snapshot()
             nodes, edges = neo4j_payload(entry.id, snapshot)
             store_revision = snapshot["revision"]
+        try:
+            check_hierarchy(stores, entry.id, edges)
+        except ValueError as exc:
+            raise StoreReadError(str(exc)) from exc
     except (HTTPException, ProcessingError, StoreReadError) as exc:
-        # An unreachable store stays out of Explore; its catalog entry and routes carry the error.
+        # An unreadable or refused store stays out of Explore; its catalog entry and routes carry the error.
         entry.error = str(exc.detail if isinstance(exc, HTTPException) else exc)
         entry.nodes, entry.edges, entry.revision = [], [], None
         logger.error("Store %s could not be read: %s", entry.id, entry.error)
@@ -465,7 +495,6 @@ def catalog(app: Any) -> list[dict[str, Any]]:
             "id": entry.id,
             "name": entry.name,
             "source": entry.source,
-            "parent_id": graph_id(entry.name) if entry.graph_iri is not None else None,
             "graph_iri": entry.graph_iri,
             "model": "rdf" if entry.source == "jena" else "property-graph",
             "capabilities": {

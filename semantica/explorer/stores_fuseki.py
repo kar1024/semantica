@@ -12,6 +12,9 @@ from rdflib import BNode, Graph, Literal, URIRef
 from rdflib.compare import isomorphic
 from rdflib.namespace import RDF, RDFS, SKOS, XSD
 
+# Characters SPARQL's IRIREF forbids; N-Triples escapes can smuggle them into a parsed IRI.
+IRI_FORBIDDEN = re.compile(r'[\x00-\x20<>"{}|^`\\]')
+
 
 def term_text(term):
     if isinstance(term, URIRef):
@@ -36,6 +39,9 @@ def parse_term(value):
         subject, predicate, term = next(iter(graph))
         if subject != URIRef('urn:uo:s') or predicate != URIRef('urn:uo:p'):
             raise ValueError('Invalid RDF term')
+        checked = term.datatype if isinstance(term, Literal) else term
+        if isinstance(checked, URIRef) and IRI_FORBIDDEN.search(checked):
+            raise ValueError('IRI contains a character SPARQL forbids')
         # Keep the server blank-node identifier; rdflib scopes parser labels itself.
         if value.startswith('_:'):
             return BNode(value[2:])
@@ -118,12 +124,8 @@ class Jena:
             raise HTTPException(502, f'Fuseki returned HTTP {response.status_code}: {response.text}')
         return response
 
-    def query_json(self, dataset, query, graph=None):
-        params = {}
-        if graph is not None:
-            params['default-graph-uri'] = graph
-            params['named-graph-uri'] = graph
-        return self.request('POST', '/' + quote(dataset, safe='') + '/query', params=params, content=query,
+    def query_json(self, dataset, query):
+        return self.request('POST', '/' + quote(dataset, safe='') + '/query', content=query,
                             headers={'Accept': 'application/sparql-results+json', 'Content-Type': 'application/sparql-query'}).json()
 
     def read(self, identifier):
@@ -161,7 +163,7 @@ class Jena:
                   'properties': {}} for row in sorted(triples, key=lambda row: tuple(map(term_text, row)))]
         return {'nodes': nodes, 'edges': edges, 'revision': revision(triples)}
 
-    def replace(self, identifier, base_revision, remove, add):
+    def replace(self, identifier, base_revision, remove, add, check):
         dataset, context = graph_ref(identifier)
         current = self.read(identifier)
         if revision(current) != base_revision:
@@ -181,6 +183,7 @@ class Jena:
         expected = (current - removed) | added
         if expected == current:
             return {'revision': base_revision}
+        check(expected)
         existing = {term for row in current for term in row if isinstance(term, BNode)}
         blank_variables = {term: '?blank' + str(index) for index, term in enumerate(sorted(existing, key=str))}
         def template(row):

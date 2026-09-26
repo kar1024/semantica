@@ -12,10 +12,13 @@ import rdflib
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from rdflib import BNode, Literal, URIRef
-from rdflib.namespace import OWL, RDF, RDFS, XSD
+from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
+from semantica.context.context_graph import ContextGraph
 from semantica.explorer import stores as stores_module
+from semantica.explorer.app import _install_mutation_bridge
 from semantica.explorer.routes.stores import router
+from semantica.explorer.session import GraphSession
 from semantica.explorer.stores import (
     StoreReadError,
     Stores,
@@ -37,6 +40,7 @@ from semantica.explorer.stores_fuseki import (
     revision,
 )
 from semantica.utils.exceptions import ProcessingError
+from tests.explorer.test_ontology_authoring import NAMESPACE, _review_service
 
 KNOWLEDGE = "viking://resources/context-compilation/knowledge-graph"
 KNOWLEDGE_ID = graph_id("knowledge", KNOWLEDGE)
@@ -58,21 +62,33 @@ KNOWLEDGE_TRIPLES = {
     (BNode("b0"), RDF.subject, URIRef(ALEX)),
     (BNode("b0"), RDF.predicate, RDF.type),
 }
-NODE_RECORDS = [
+NOTE_RECORD, FOLDER_RECORD, TAG_RECORD, STUB_RECORD = NODE_RECORDS = [
     {
-        "element": "4:a:0",
         "labels": ["Person", "Note"],
         "properties": {"path": NOTE, "title": "Karelin, Alex", "folder": "KG/Person", "class": PERSON},
     },
-    {"element": "4:a:1", "labels": ["Folder"], "properties": {"path": "KG/Person", "name": "Person"}},
-    {"element": "4:a:2", "labels": ["Tag"], "properties": {"name": "family"}},
-    {"element": "4:a:3", "labels": ["Stub"], "properties": {"name": "Somebody"}},
+    {"labels": ["Folder"], "properties": {"path": "KG/Person", "name": "Person"}},
+    {"labels": ["Tag"], "properties": {"name": "family"}},
+    {"labels": ["Stub"], "properties": {"name": "Somebody"}},
 ]
+
+
+def _relationship(source: dict, type_: str, properties: dict, target: dict) -> dict:
+    return {
+        "source_labels": source["labels"],
+        "source_properties": source["properties"],
+        "type": type_,
+        "properties": properties,
+        "target_labels": target["labels"],
+        "target_properties": target["properties"],
+    }
+
+
 RELATIONSHIP_RECORDS = [
-    {"source": "4:a:0", "type": "IN_FOLDER", "properties": {}, "target": "4:a:1"},
-    {"source": "4:a:0", "type": "TAGGED", "properties": {}, "target": "4:a:2"},
-    {"source": "4:a:0", "type": "LINKS_TO", "properties": {"field": "related"}, "target": "4:a:3"},
-    {"source": "4:a:0", "type": "PROJECT", "properties": {"iri": PROJECT}, "target": "4:a:3"},
+    _relationship(NOTE_RECORD, "IN_FOLDER", {}, FOLDER_RECORD),
+    _relationship(NOTE_RECORD, "TAGGED", {}, TAG_RECORD),
+    _relationship(NOTE_RECORD, "LINKS_TO", {"field": "related"}, STUB_RECORD),
+    _relationship(NOTE_RECORD, "PROJECT", {"iri": PROJECT}, STUB_RECORD),
 ]
 
 
@@ -211,14 +227,9 @@ def test_neo4j_records_map_to_keyed_ids_types_and_class_edges() -> None:
     assert links["properties"] == {"field": "related"}
 
 
-def test_neo4j_revision_ignores_internal_ids_and_order() -> None:
+def test_neo4j_revision_ignores_order_and_follows_content() -> None:
     first = neo4j_snapshot(KEYS, NODE_RECORDS, RELATIONSHIP_RECORDS)
-    renumbered = {row["element"]: f"5:b:{index}" for index, row in enumerate(NODE_RECORDS)}
-    nodes = [{**row, "element": renumbered[row["element"]]} for row in reversed(NODE_RECORDS)]
-    relationships = [
-        {**row, "source": renumbered[row["source"]], "target": renumbered[row["target"]]}
-        for row in reversed(RELATIONSHIP_RECORDS)
-    ]
+    nodes, relationships = NODE_RECORDS[::-1], RELATIONSHIP_RECORDS[::-1]
     assert neo4j_snapshot(KEYS, nodes, relationships)["revision"] == first["revision"]
     retitled = [
         {**row, "properties": {**row["properties"], "title": "Alex"}} if "Note" in row["labels"] else row
@@ -227,11 +238,45 @@ def test_neo4j_revision_ignores_internal_ids_and_order() -> None:
     assert neo4j_snapshot(KEYS, retitled, relationships)["revision"] != first["revision"]
 
 
+def test_neo4j_relationships_name_endpoints_by_key_across_a_rebuild() -> None:
+    # load_vault may commit between the node and relationship statements; the
+    # relationship rows then describe nodes the node rows never listed.
+    added = {"labels": ["Note"], "properties": {"path": "KG/New.md", "title": "New"}}
+    snapshot = neo4j_snapshot(
+        KEYS, [NOTE_RECORD], [_relationship(added, "LINKS_TO", {}, NOTE_RECORD)]
+    )
+    assert snapshot["relationships"] == [
+        {"source": "neo4j:Note:KG/New.md", "type": "LINKS_TO", "target": NOTE_ID, "properties": {}}
+    ]
+
+
 @pytest.mark.parametrize("labels", [["Person"], ["Note", "Tag"]])
 def test_neo4j_node_needs_exactly_one_keyed_label(labels) -> None:
-    record = {"element": "4:a:9", "labels": labels, "properties": {"path": "x.md", "name": "x"}}
+    record = {"labels": labels, "properties": {"path": "x.md", "name": "x"}}
     with pytest.raises(StoreReadError):
         neo4j_snapshot(KEYS, [record], [])
+    with pytest.raises(StoreReadError):
+        neo4j_snapshot(KEYS, [NOTE_RECORD], [_relationship(NOTE_RECORD, "LINKS_TO", {}, record)])
+
+
+def test_neo4j_database_closes_its_driver_when_start_fails(monkeypatch) -> None:
+    closed = []
+
+    class _Store:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def connect(self) -> None:
+            raise ProcessingError("Could not verify connectivity to Neo4j")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(stores_module, "Neo4jStore", _Store)
+    config = stores_module.Neo4jConfig.model_validate(_config()["neo4j"])
+    with pytest.raises(ProcessingError):
+        stores_module.Neo4jDatabase(config)
+    assert closed == [True]
 
 
 def test_merge_keeps_one_node_per_id_and_store_nodes_win() -> None:
@@ -282,6 +327,30 @@ def _results(triples) -> dict:
 
 
 COMMENT = (URIRef(PERSON), RDFS.comment, Literal("Somebody with a name.", lang="en"))
+CONCEPT_A = URIRef("https://uo.karel.in/ontology#A")
+CONCEPT_B = URIRef("https://uo.karel.in/ontology#B")
+# A term the authoring TTL also declares, typed and labelled differently in Fuseki.
+ITEM = URIRef(f"{NAMESPACE}item")
+ITEM_TRIPLES = {(ITEM, RDF.type, OWL.NamedIndividual), (ITEM, RDFS.label, Literal("Item in Fuseki"))}
+# Text that closes the INSERT block and appends its own update, if it reaches the update unescaped.
+BREAKOUT = "> . } WHERE { } ; DROP ALL ; INSERT { <urn:a> <urn:b> <urn:c"
+
+
+def _escaped(text: str) -> str:
+    """Hide the characters an N-Triples IRI cannot hold behind \\u escapes."""
+    return "".join(f"\\u{ord(char):04X}" if char in "<> " else char for char in text)
+
+
+def _add(client: TestClient, identifier: str, subject, predicate, obj: str):
+    base = client.get(f"/api/stores/{identifier}/graph").json()["revision"]
+    return client.post(
+        f"/api/stores/{identifier}/triples/replace",
+        json={
+            "base_revision": base,
+            "remove": [],
+            "add": [{"subject": f"<{subject}>", "predicate": f"<{predicate}>", "object": obj}],
+        },
+    )
 
 
 class _Graph:
@@ -332,16 +401,51 @@ def fuseki():
     return state
 
 
+class _Neo4jDatabase:
+    """The vault as NODE_RECORDS and RELATIONSHIP_RECORDS describe it."""
+
+    def __init__(self, _config) -> None:
+        pass
+
+    def snapshot(self) -> dict:
+        return neo4j_snapshot(KEYS, NODE_RECORDS, RELATIONSHIP_RECORDS)
+
+
 @pytest.fixture
-def app(tmp_path, monkeypatch, fuseki) -> FastAPI:
+def stores(tmp_path, monkeypatch, fuseki) -> Stores:
+    monkeypatch.setattr(stores_module, "Neo4jDatabase", _Neo4jDatabase)
     stores = Stores(_load(tmp_path, monkeypatch, _config()))
     stores.jena = Jena(fuseki["client"])
+    return stores
+
+
+@pytest.fixture
+def app(stores) -> FastAPI:
     app = FastAPI()
     app.state.stores = stores
     app.state.session = _Session()
     app.include_router(router)
-    reload_stores(app, ["jena:uo", KNOWLEDGE_ID])
+    reload_stores(app, list(stores.entries))
     refresh_session_graph(app, app.state.session)
+    return app
+
+
+@pytest.fixture
+def authoring_app(tmp_path, stores, fuseki) -> FastAPI:
+    """The app as five runs it: the authoring projection, the stores and the websocket bridge."""
+    fuseki["uo"] |= ITEM_TRIPLES
+    service, _, _ = _review_service(tmp_path / "authoring")
+    session = GraphSession(ContextGraph(advanced_analytics=False))
+    app = FastAPI()
+    app.state.session = session
+    app.state.stores = stores
+    app.state.ontology_authoring_service = service
+    app.include_router(router)
+    reload_stores(app, list(stores.entries))
+    refresh_session_graph(app, session)
+    app.state.broadcasts = []
+    session.graph.mutation_callback = lambda event_type, *_: app.state.broadcasts.append(event_type)
+    _install_mutation_bridge(app, session)
     return app
 
 
@@ -361,6 +465,7 @@ def test_session_graph_holds_every_loaded_store(app) -> None:
     graph = app.state.session.graph
     assert graph.nodes[PERSON]["properties"]["stores"] == ["jena:uo", KNOWLEDGE_ID]
     assert ALEX in graph.nodes
+    assert NOTE_ID in graph.nodes
     assert app.state.session.events == ["RESET_GRAPH"]
 
 
@@ -397,6 +502,58 @@ def test_replace_answers_409_on_a_stale_revision(app, fuseki) -> None:
     assert ("uo", "update") not in fuseki["requests"]
 
 
+@pytest.mark.parametrize(
+    "obj",
+    [f"<urn:x{_escaped(BREAKOUT)}>", f'"1"^^<{XSD.boolean}{_escaped(BREAKOUT)}>'],
+    ids=["object IRI", "literal datatype"],
+)
+def test_replace_refuses_an_iri_that_would_leave_the_update(app, fuseki, obj) -> None:
+    response = _add(TestClient(app), "jena:uo", PERSON, RDFS.seeAlso, obj)
+    assert response.status_code == 422, response.text
+    assert ("uo", "update") not in fuseki["requests"]
+
+
+@pytest.mark.parametrize("dataset", ["uo", "knowledge"])
+def test_replace_refuses_a_skos_cycle_before_writing(app, fuseki, dataset) -> None:
+    # A broader B, in the edited store or in another one; A narrower B closes the cycle.
+    fuseki[dataset].add((CONCEPT_A, SKOS.broader, CONCEPT_B))
+    reload_stores(app, list(app.state.stores.entries))
+    response = _add(TestClient(app), "jena:uo", CONCEPT_A, SKOS.narrower, f"<{CONCEPT_B}>")
+    assert response.status_code == 422, response.text
+    assert "cycle" in response.json()["detail"]
+    assert ("uo", "update") not in fuseki["requests"]
+
+
+def test_store_writes_reproject_with_the_authoring_ttl(authoring_app, fuseki) -> None:
+    graph = authoring_app.state.session.graph
+    item = graph.find_node(str(ITEM))
+    assert (item["type"], item["content"]) == ("owl:NamedIndividual", "Item in Fuseki")
+    assert item["metadata"]["stores"] == ["jena:uo"]
+    assert graph.find_node(f"{NAMESPACE}Category") is not None
+    assert graph.find_node(PERSON)["metadata"]["stores"] == ["jena:uo", KNOWLEDGE_ID]
+    assert graph.find_node(NOTE_ID) is not None
+
+    response = _add(TestClient(authoring_app), "jena:uo", PERSON, RDFS.comment, '"Somebody with a name."@en')
+    assert response.status_code == 200, response.text
+    stored = ("jena:uo", revision(UO_TRIPLES | ITEM_TRIPLES | {COMMENT}), None)
+    assert stored in authoring_app.state.ontology_projection_token[1]
+    assert authoring_app.state.session.graph is not graph
+    # The reset goes through the bridge, which is what carries it to the browser.
+    assert authoring_app.state.broadcasts == ["RESET_GRAPH"]
+
+
+def test_store_with_a_skos_cycle_stays_out_and_the_graph_still_builds(authoring_app, fuseki) -> None:
+    fuseki["knowledge"] |= {(CONCEPT_A, SKOS.broader, CONCEPT_B), (CONCEPT_B, SKOS.broader, CONCEPT_A)}
+    client = TestClient(authoring_app)
+    items = {item["id"]: item for item in client.post("/api/stores/reload", json={}).json()["items"]}
+    assert "cycle" in items[KNOWLEDGE_ID]["error"]
+    assert items["jena:uo"]["error"] is None
+    graph = authoring_app.state.session.graph
+    assert graph.find_node(ALEX) is None
+    assert graph.find_node(PERSON)["metadata"]["stores"] == ["jena:uo"]
+    assert graph.find_node(f"{NAMESPACE}Category") is not None
+
+
 def test_routes_refuse_unknown_neo4j_and_unconfigured_stores(app) -> None:
     client = TestClient(app)
     assert client.get("/api/stores/jena:main_ontology/graph").status_code == 404
@@ -412,6 +569,7 @@ def test_unreachable_store_carries_its_error_and_stays_out_of_the_graph(
     def unreachable(_config):
         raise ProcessingError("Neo4j service unavailable: neo4j.test")
 
+    app.state.stores.neo4j = None
     monkeypatch.setattr(stores_module, "Neo4jDatabase", unreachable)
     fuseki["down"].add("knowledge")
     client = TestClient(app)

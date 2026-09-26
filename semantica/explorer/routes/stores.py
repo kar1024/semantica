@@ -7,7 +7,14 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..stores import Stores, catalog, refresh_session_graph, reload_stores
+from ..stores import (
+    Stores,
+    catalog,
+    check_hierarchy,
+    rdf_payload,
+    refresh_session_graph,
+    reload_stores,
+)
 from ..stores_fuseki import Jena
 
 router = APIRouter(prefix="/api/stores", tags=["stores"])
@@ -77,11 +84,21 @@ def enums(request: Request, identifier: str):
 
 @router.post("/{identifier}/triples/replace")
 def replace(request: Request, identifier: str, body: Replace):
+    stores = _stores(request)
+
+    def check(expected) -> None:
+        # Refuse before Fuseki is written: the session graph would reject the stored result.
+        try:
+            check_hierarchy(stores, identifier, rdf_payload(identifier, expected)[1])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     result = _fuseki(request, identifier).replace(
         identifier,
         body.base_revision,
         [row.model_dump() for row in body.remove],
         [row.model_dump() for row in body.add],
+        check,
     )
     reload_stores(request.app, [identifier])
     refresh_session_graph(request.app, request.app.state.session)

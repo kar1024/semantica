@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Explore view reloads. Neo4j is read-only.
 - A store that cannot be reached stays out of Explore and carries its error in
   the catalog and its routes; an invalid configuration file stops startup.
+- A store whose SKOS hierarchy has a cycle, alone or with the other stores, is
+  kept out of Explore the same way. A save that would create such a cycle, or
+  that carries an IRI with a character SPARQL forbids, answers 422 and never
+  reaches Fuseki.
 
 ### Fixed - [Claude] - 2026-08-13
 
