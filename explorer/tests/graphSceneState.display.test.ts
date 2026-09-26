@@ -882,6 +882,19 @@ test("resolveDisplayGraph bundles parallel edges in full view", () => {
   assert.equal(attrs.bundleKind, "parallel");
 });
 
+test("resolveDisplayGraph keeps node ids that contain an arrow whole", () => {
+  addNode("note (planning → kanban).md");
+  addNode("stub");
+  addNode("folder");
+  addEdge("e1", "note (planning → kanban).md", "stub", 1);
+  addEdge("e2", "note (planning → kanban).md", "folder", 1);
+  addEdge("e3", "note (planning → kanban).md", "folder", 2);
+
+  const { graph } = resolveDisplayGraph("", [], [], "full", { aggregationEnabled: true });
+  assert.deepEqual(new Set(graph.nodes()), new Set(["note (planning → kanban).md", "stub", "folder"]));
+  assert.equal(graph.size, 2);
+});
+
 test("resolveDisplayGraph collapse keeps path neighbor visible", () => {
   addNode("center");
   for (let index = 0; index < 10; index += 1) {

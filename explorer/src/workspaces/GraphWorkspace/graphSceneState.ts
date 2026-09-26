@@ -2110,16 +2110,21 @@ function aggregateDisplayGraph(graphRef: GraphRef): Graph<NodeAttributes, EdgeAt
     aggregated.addNode(nodeId, { ...(attrs as NodeAttributes) });
   });
 
-  const groupedEdges = new Map<string, Array<{ edgeId: string; attrs: EdgeAttributes }>>();
+  // Node ids may contain any character (vault paths hold "→"), so the key is JSON and the
+  // bucket carries its endpoints instead of splitting them back out of the key.
+  const groupedEdges = new Map<string, {
+    sourceId: string;
+    targetId: string;
+    entries: Array<{ edgeId: string; attrs: EdgeAttributes }>;
+  }>();
   graphRef.forEachEdge((edgeId, attrs, sourceId, targetId) => {
-    const key = `${sourceId}→${targetId}`;
-    const bucket = groupedEdges.get(key) ?? [];
-    bucket.push({ edgeId: String(edgeId), attrs: attrs as EdgeAttributes });
+    const key = JSON.stringify([sourceId, targetId]);
+    const bucket = groupedEdges.get(key) ?? { sourceId, targetId, entries: [] };
+    bucket.entries.push({ edgeId: String(edgeId), attrs: attrs as EdgeAttributes });
     groupedEdges.set(key, bucket);
   });
 
-  groupedEdges.forEach((entries, key) => {
-    const [sourceId, targetId] = key.split("→");
+  groupedEdges.forEach(({ sourceId, targetId, entries }) => {
     if (entries.length === 1) {
       const [{ edgeId, attrs }] = entries;
       aggregated.mergeDirectedEdgeWithKey(edgeId, sourceId, targetId, {
@@ -2154,7 +2159,7 @@ function aggregateDisplayGraph(graphRef: GraphRef): Graph<NodeAttributes, EdgeAt
       typeCounts.set(edgeType, (typeCounts.get(edgeType) ?? 0) + 1);
     });
     const dominantEdgeType = [...typeCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? representative.attrs.edgeType ?? "related_to";
-    const reverseKey = `${targetId}→${sourceId}`;
+    const reverseKey = JSON.stringify([targetId, sourceId]);
     const isBidirectionalBundle = groupedEdges.has(reverseKey);
     const syntheticEdgeId = `${AGGREGATED_EDGE_PREFIX}${sourceId}::${targetId}`;
 
