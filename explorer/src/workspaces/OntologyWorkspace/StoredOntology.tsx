@@ -7,8 +7,7 @@ import "./stored-ontology.css";
 interface Dataset {
   id: string;
   name: string;
-  source: "jena" | "age";
-  parent_id?: string;
+  source: "jena" | "neo4j";
   graph_iri: string | null;
   model: "rdf" | "property-graph";
   capabilities: { edit: boolean; enums: boolean };
@@ -31,12 +30,11 @@ const DEFINITIONS = ["http://www.w3.org/2004/02/skos/core#definition", "http://w
 const SKOS = "http://www.w3.org/2004/02/skos/core#";
 const bare = (term: string) => term.startsWith("<") && term.endsWith(">") ? term.slice(1, -1) : term;
 const field = (data: FormData, name: string) => String(data.get(name) ?? "");
-const path = (id: string) => `/api/uo/datasets/${encodeURIComponent(id)}`;
+const path = (id: string) => `/api/stores/${encodeURIComponent(id)}`;
 const failureMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-function datasetLabel(dataset: Dataset, catalog: Dataset[]) {
-  const parent = catalog.find((item) => item.id === dataset.parent_id);
-  return `${dataset.source.toUpperCase()} · ${parent ? `${parent.name} · ` : ""}${dataset.graph_iri ?? dataset.name}`;
+function datasetLabel(dataset: Dataset) {
+  return `${dataset.source.toUpperCase()} · ${dataset.name}${dataset.graph_iri ? ` · ${dataset.graph_iri}` : ""}`;
 }
 
 async function request<T>(url: string, payload?: unknown, signal?: AbortSignal): Promise<T> {
@@ -140,7 +138,7 @@ export function StoredOntology() {
 
   useEffect(() => {
     const controller = new AbortController(); setCatalogLoading(true);
-    request<{ items: Dataset[] }>("/api/uo/datasets", undefined, controller.signal).then(({ items }) => setDatasets(items.filter((item) => item.model === "rdf"))).catch((error: unknown) => { if (!controller.signal.aborted) setError(failureMessage(error)); }).finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
+    request<{ items: Dataset[] }>("/api/stores", undefined, controller.signal).then(({ items }) => setDatasets(items.filter((item) => item.model === "rdf"))).catch((error: unknown) => { if (!controller.signal.aborted) setError(failureMessage(error)); }).finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
     return () => controller.abort();
   }, [revision]);
   useEffect(() => {
@@ -165,6 +163,12 @@ export function StoredOntology() {
     } catch (error) { setError(failureMessage(error)); return false; }
     finally { setBusy(false); }
   }
+  async function refresh() {
+    setBusy(true); setError(""); setNotice("");
+    try { await request("/api/stores/reload", {}); setRevision((value) => value + 1); }
+    catch (error) { setError(failureMessage(error)); }
+    finally { setBusy(false); }
+  }
   function selectTerm(term: string) {
     const selectedNode = graph?.nodes.find((item) => item.term === term);
     if (selectedNode) setEntity(bare(selectedNode.term));
@@ -172,7 +176,7 @@ export function StoredOntology() {
   }
 
   return <div className="stored-ontology">
-    <div className="stored-toolbar"><label>Stored ontology or RDF knowledge graph<select value={selected} onChange={(event) => { setSelected(event.target.value); setGraph(null); setEntity(""); setSchemes(null); setView("terms"); setNotice(""); setError(""); }}><option value="">Choose a dataset</option>{datasets.map((item) => <option key={item.id} value={item.id}>{datasetLabel(item, datasets)}</option>)}</select></label><button disabled={loading || catalogLoading || busy} onClick={() => { setError(""); setRevision((value) => value + 1); }}>Refresh</button></div>
+    <div className="stored-toolbar"><label>Stored ontology or RDF knowledge graph<select value={selected} onChange={(event) => { setSelected(event.target.value); setGraph(null); setEntity(""); setSchemes(null); setView("terms"); setNotice(""); setError(""); }}><option value="">Choose a dataset</option>{datasets.map((item) => <option key={item.id} value={item.id}>{datasetLabel(item)}</option>)}</select></label><button disabled={loading || catalogLoading || busy} onClick={() => void refresh()}>Refresh</button></div>
     {error && <p className="stored-error" role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}{(loading || catalogLoading) && <p role="status">Loading…</p>}
     {selected && !catalogLoading && !error && !dataset && <p className="stored-error" role="alert">Requested dataset is not an available RDF source: {selected}</p>}
     {graph && entity && !node && <p className="stored-error" role="alert">Requested term is not present in this source: {entity}</p>}

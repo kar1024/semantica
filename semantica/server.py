@@ -58,7 +58,9 @@ async def lifespan(app: FastAPI):
 
     if app.state.session is not None:
         from .explorer.routes.ontology_authoring import initialize_authoring_projection
+        from .explorer.stores import initialize_stores
 
+        initialize_stores(app, app.state.session)
         initialize_authoring_projection(app, app.state.session)
 
     yield
@@ -170,6 +172,7 @@ if EXPLORER_AVAILABLE:
             ontology_authoring,
             provenance,
             sparql,
+            stores,
             temporal,
             vocabulary,
         )
@@ -186,6 +189,7 @@ if EXPLORER_AVAILABLE:
         app.include_router(vocabulary.router)
         app.include_router(provenance.router)
         app.include_router(sparql.router)
+        app.include_router(stores.router)
 
         logging.info(
             "Explorer, Vocabulary, SPARQL, Provenance, and Ontology API routes successfully mounted."

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - [Claude] - 2026-09-26
+
+- Explore reads every store named in `SEMANTICA_STORES_CONFIG` into one graph
+  beside the authoring projection: Fuseki datasets and named graphs, and a
+  Neo4j database identified by its node uniqueness constraints. Each node
+  lists the stores it came from, and a store node replaces a projected TTL
+  node with the same IRI.
+- `/api/stores` lists the configured stores, reloads them, and edits Fuseki
+  assertions with the revision-checked replace the Stored ontologies tab
+  already uses. A write re-reads its store and resets the graph, and an open
+  Explore view reloads. Neo4j is read-only.
+- A store that cannot be reached stays out of Explore and carries its error in
+  the catalog and its routes; an invalid configuration file stops startup.
+
 ### Fixed - [Claude] - 2026-08-13
 
 - Restored the Ontology Hub Registry and Alignments tabs dropped by the

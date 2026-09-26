@@ -327,6 +327,33 @@ def _projection_payload(
     return list(nodes.values()), list(edges.values())
 
 
+def replace_session_graph(
+    session: Any, nodes: list[dict[str, Any]], edges: list[dict[str, Any]], entity_id: str
+) -> Any:
+    current_graph = session.graph
+    graph_config = dict(getattr(current_graph, "config", {}))
+    graph_config.pop("mutation_callback", None)
+    projected_graph = current_graph.__class__(config=graph_config)
+    projected_graph._suspend_mutation_callback = True
+    projected_graph.add_nodes(nodes)
+    projected_graph.add_edges(edges)
+    projected_graph._suspend_mutation_callback = False
+
+    with session._lock:
+        callback = getattr(current_graph, "mutation_callback", None)
+        bridged = getattr(current_graph, "_mutation_bridge_installed", False)
+        if callback is not None:
+            projected_graph.mutation_callback = callback
+            projected_graph._mutation_bridge_installed = bridged
+        session.graph = projected_graph
+    # The installed bridge updates the session and broadcasts the reset to the browser.
+    if callback is not None and bridged:
+        callback("RESET_GRAPH", entity_id, {})
+    else:
+        session.handle_graph_mutation("RESET_GRAPH", entity_id, {})
+    return projected_graph
+
+
 @dataclass(frozen=True)
 class _LoadedVocabularyReview:
     document: LoadedDocument
@@ -508,11 +535,17 @@ class AuthoringService:
         }
 
     def project_into(self, app: Any, session: Any) -> bool:
+        from .stores import merge_payloads, store_payload
+
         with self._projection_lock:
             documents = self.documents()
-            projection_token = tuple(
-                (document_id, document.revision)
-                for document_id, document in documents.items()
+            store_nodes, store_edges, store_token = store_payload(app)
+            projection_token = (
+                tuple(
+                    (document_id, document.revision)
+                    for document_id, document in documents.items()
+                ),
+                store_token,
             )
             current_registry = getattr(app.state, "ontology_registry", None)
             registry_intact = isinstance(current_registry, dict)
@@ -538,15 +571,9 @@ class AuthoringService:
             ):
                 return False
 
-            nodes, edges = _projection_payload(documents)
-            current_graph = session.graph
-            graph_config = dict(getattr(current_graph, "config", {}))
-            graph_config.pop("mutation_callback", None)
-            projected_graph = current_graph.__class__(config=graph_config)
-            projected_graph._suspend_mutation_callback = True
-            projected_graph.add_nodes(nodes)
-            projected_graph.add_edges(edges)
-            projected_graph._suspend_mutation_callback = False
+            nodes, edges = merge_payloads(
+                [(store_nodes, store_edges), _projection_payload(documents)]
+            )
 
             from .routes.ontology import OntologyEntry
 
@@ -584,18 +611,12 @@ class AuthoringService:
                     managed_by_authoring=True,
                 )
 
-            with session._lock:
-                callback = getattr(current_graph, "mutation_callback", None)
-                if callback is not None:
-                    projected_graph.mutation_callback = callback
-                    projected_graph._mutation_bridge_installed = getattr(
-                        current_graph, "_mutation_bridge_installed", False
-                    )
-                session.graph = projected_graph
-                app.state.ontology_registry = registry
-                app.state.ontology_projection_token = projection_token
-                app.state.ontology_projection_graph = projected_graph
-            session.handle_graph_mutation("RESET_GRAPH", "ontology-source", {})
+            projected_graph = replace_session_graph(
+                session, nodes, edges, "ontology-source"
+            )
+            app.state.ontology_registry = registry
+            app.state.ontology_projection_token = projection_token
+            app.state.ontology_projection_graph = projected_graph
             app.state.ontology_projection_graph_revision = getattr(
                 session, "_graph_revision", None
             )

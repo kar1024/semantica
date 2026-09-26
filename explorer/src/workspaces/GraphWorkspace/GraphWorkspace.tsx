@@ -1595,6 +1595,10 @@ export function GraphWorkspace({ externalFocusNodeId, externalFocusToken }: Grap
         }
         const eventType = message.data?.event_type;
         const payload = message.data?.payload;
+        if (eventType === "RESET_GRAPH") {
+          void reload();
+          return;
+        }
         if (eventType === "ADD_NODE" && payload?.id) {
           batchMergeNodes([
             {

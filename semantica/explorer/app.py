@@ -101,7 +101,9 @@ def create_app(
         app.state.ws_manager = ConnectionManager()
         app.state.session = active_session
         from .routes.ontology_authoring import initialize_authoring_projection
+        from .stores import initialize_stores
 
+        initialize_stores(app, active_session)
         initialize_authoring_projection(app, active_session)
         _install_mutation_bridge(app, active_session)
         yield
@@ -165,6 +167,7 @@ def create_app(
     from .routes.ontology_authoring import router as ontology_authoring_router
     from .routes.provenance import router as provenance_router
     from .routes.sparql import router as sparql_router
+    from .routes.stores import router as stores_router
     from .routes.temporal import router as temporal_router
     from .routes.vocabulary import router as vocabulary_router
 
@@ -180,6 +183,7 @@ def create_app(
     app.include_router(vocabulary_router)
     app.include_router(ontology_router)
     app.include_router(ontology_authoring_router)
+    app.include_router(stores_router)
     _WS_MAX_MESSAGE_BYTES = 64 * 1024  # 64 KB — control messages only
 
     @app.websocket("/ws/graph-updates")
