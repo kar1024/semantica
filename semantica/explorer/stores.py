@@ -587,7 +587,7 @@ class Neo4jDatabase:
             if not marked:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"{source} has no {type_} to {target} any more; reload it",
+                    detail=f"{source} has no {type_} to {target} any more",
                 )
             if all(marked):
                 raise HTTPException(
@@ -657,10 +657,10 @@ class Neo4jDatabase:
     ) -> dict[str, Any]:
         node = self._node(tx, label, key)
         if node is None:
-            raise HTTPException(status_code=409, detail=f"{node_id} no longer exists; reload it")
+            raise HTTPException(status_code=409, detail=f"{node_id} no longer exists")
         if record_revision(node) != base_revision:
             raise HTTPException(
-                status_code=409, detail=f"{node_id} changed since it was loaded; reload it"
+                status_code=409, detail=f"{node_id} changed since it was loaded"
             )
         return node
 
@@ -673,7 +673,7 @@ class Neo4jDatabase:
         for label, key in ends:
             if self._node(tx, label, key) is None:
                 raise HTTPException(
-                    status_code=409, detail=f"neo4j:{label}:{key} no longer exists; reload it"
+                    status_code=409, detail=f"neo4j:{label}:{key} no longer exists"
                 )
         (source_label, source_key), (target_label, target_key) = ends
         match = (
@@ -703,11 +703,14 @@ def neo4j_vocabulary(stores: "Stores") -> dict[str, Any]:
             }
         )
 
-    labels = [
-        {"label": local_name(iri), "class": iri}
-        for iri in typed(OWL.Class)
-        if local_name(iri) not in stores.neo4j.key_by_label
-    ]
+    labels = sorted(
+        (
+            {"label": local_name(iri), "class": iri}
+            for iri in typed(OWL.Class)
+            if local_name(iri) not in stores.neo4j.key_by_label
+        ),
+        key=lambda item: (item["label"], item["class"]),
+    )
     types: dict[str, Optional[str]] = {}
     for iri in typed(OWL.ObjectProperty):
         name = relationship_type(iri)

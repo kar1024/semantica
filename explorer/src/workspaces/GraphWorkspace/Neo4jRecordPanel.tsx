@@ -92,7 +92,7 @@ export function Neo4jRecordPanel({ nodeId, storeId, onFocusNode }: { nodeId: str
       return await request<Record<string, unknown>>(`${base}/mutate`, body);
     } catch (error) {
       if (error instanceof StoreError && error.status === 409 && !error.id) {
-        setNotice({ text: `${error.message}. It changed since it was loaded; this is the current record.` });
+        setNotice({ text: `${error.message}. Showing the current record.` });
         await load().catch((reloadError: unknown) => setNotice({ text: failure(reloadError) }));
       } else {
         setNotice({ text: failure(error), id: error instanceof StoreError ? error.id : undefined });
