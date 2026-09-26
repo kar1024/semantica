@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that carries an IRI with a character SPARQL forbids, answers 422 and never
   reaches Fuseki.
 
+### Fixed - [Claude] - 2026-09-26
+
+- Explore no longer fails to render when a node id contains `→`, as vault note
+  paths do. Parallel-edge bundling split its pair key on `→` and created a
+  node with a truncated id and no position.
+
 ### Fixed - [Claude] - 2026-08-13
 
 - Restored the Ontology Hub Registry and Alignments tabs dropped by the
