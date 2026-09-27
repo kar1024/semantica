@@ -75,6 +75,7 @@ class FusekiDataset(BaseModel):
 
     dataset: str
     graph: Optional[str]
+    edit: bool
 
     @model_validator(mode="after")
     def validate_values(self) -> "FusekiDataset":
@@ -740,6 +741,7 @@ class StoreEntry:
     name: str
     source: str
     graph_iri: Optional[str]
+    edit: bool
     nodes: list[dict[str, Any]] = field(default_factory=list)
     edges: list[dict[str, Any]] = field(default_factory=list)
     revision: Optional[str] = None
@@ -762,11 +764,13 @@ class Stores:
             )
             for item in config.fuseki.datasets:
                 store_id = graph_id(item.dataset, item.graph)
-                self.entries[store_id] = StoreEntry(store_id, item.dataset, "jena", item.graph)
+                self.entries[store_id] = StoreEntry(
+                    store_id, item.dataset, "jena", item.graph, item.edit
+                )
         if config.neo4j is not None:
             store_id = "neo4j:" + config.neo4j.database
             self.entries[store_id] = StoreEntry(
-                store_id, config.neo4j.database, "neo4j", None
+                store_id, config.neo4j.database, "neo4j", None, True
             )
 
 
@@ -864,7 +868,7 @@ def catalog(app: Any) -> list[dict[str, Any]]:
             "graph_iri": entry.graph_iri,
             "model": "rdf" if entry.source == "jena" else "property-graph",
             "capabilities": {
-                "edit": True,
+                "edit": entry.edit,
                 "enums": entry.source == "jena",
             },
             "error": entry.error,

@@ -164,6 +164,9 @@ def enums(request: Request, identifier: str):
 @router.post("/{identifier}/triples/replace")
 def replace(request: Request, identifier: str, body: Replace):
     stores = _stores(request)
+    entry = stores.entries.get(identifier)
+    if entry is not None and not entry.edit:
+        raise HTTPException(status_code=403, detail=f"{identifier} is read-only in the stores configuration")
 
     def check(expected) -> None:
         # Refuse before Fuseki is written: the session graph would reject the stored result.

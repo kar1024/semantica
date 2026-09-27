@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - [Claude] - 2026-09-26
+
+- Every Fuseki dataset in `SEMANTICA_STORES_CONFIG` declares `edit`. A
+  dataset with `edit: false` is listed without the edit capability, and
+  `/api/stores/{id}/triples/replace` refuses it with 403 before Fuseki is
+  written.
+
 ### Added - [Claude] - 2026-09-26
 
 - Explore reads every store named in `SEMANTICA_STORES_CONFIG` into one graph

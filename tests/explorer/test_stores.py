@@ -98,8 +98,8 @@ def _config() -> dict:
             "url": "http://fuseki.test:3030",
             "timeout_seconds": 30,
             "datasets": [
-                {"dataset": "uo", "graph": None},
-                {"dataset": "knowledge", "graph": KNOWLEDGE},
+                {"dataset": "uo", "graph": None, "edit": True},
+                {"dataset": "knowledge", "graph": KNOWLEDGE, "edit": True},
             ],
         },
         "neo4j": {
@@ -133,12 +133,13 @@ REFUSALS = {
     "missing section": lambda c: c.pop("neo4j"),
     "missing timeout": lambda c: c["fuseki"].pop("timeout_seconds"),
     "missing graph": lambda c: c["fuseki"]["datasets"][0].pop("graph"),
+    "missing edit": lambda c: c["fuseki"]["datasets"][0].pop("edit"),
     "missing database": lambda c: c["neo4j"].pop("database"),
     "blank url": lambda c: c["fuseki"].update(url=" "),
     "blank dataset": lambda c: c["fuseki"]["datasets"][0].update(dataset=""),
     "blank graph": lambda c: c["fuseki"]["datasets"][1].update(graph=""),
     "blank password": lambda c: c["neo4j"].update(password=""),
-    "repeated dataset": lambda c: c["fuseki"]["datasets"].append({"dataset": "uo", "graph": None}),
+    "repeated dataset": lambda c: c["fuseki"]["datasets"].append({"dataset": "uo", "graph": None, "edit": True}),
     "missing schema": lambda c: c["neo4j"].pop("schema"),
     "schema not a configured store": lambda c: c["neo4j"].update(schema="jena:main_ontology"),
     "schema without fuseki": lambda c: c.update(fuseki=None),
@@ -496,6 +497,18 @@ def test_replace_writes_rereads_and_rebuilds_the_graph(app, fuseki) -> None:
     assert response.json()["revision"] == revision(UO_TRIPLES | {COMMENT})
     assert app.state.stores.entries["jena:uo"].revision == revision(UO_TRIPLES | {COMMENT})
     assert app.state.session.events == ["RESET_GRAPH", "RESET_GRAPH"]
+
+
+def test_replace_refuses_a_read_only_dataset(app, fuseki) -> None:
+    app.state.stores.entries["jena:uo"].edit = False
+    client = TestClient(app)
+    assert client.get("/api/stores").json()["items"][0]["capabilities"]["edit"] is False
+    response = client.post(
+        "/api/stores/jena:uo/triples/replace",
+        json={"base_revision": revision(UO_TRIPLES), "remove": [], "add": []},
+    )
+    assert response.status_code == 403
+    assert ("uo", "update") not in fuseki["requests"]
 
 
 def test_replace_answers_409_on_a_stale_revision(app, fuseki) -> None:
