@@ -352,7 +352,13 @@ def relationship_type(iri: str) -> str:
 
 
 def _name(identifier: str) -> str:
-    """A label, relationship type or property key quoted for Cypher."""
+    """A label, relationship type or property key quoted for Cypher.
+
+    Cypher decodes a unicode escape such as ``\\u0060`` even inside backticks,
+    where it would close the name, so a name holding a backslash is refused.
+    """
+    if "\\" in identifier:
+        raise HTTPException(status_code=422, detail=f"Not a Neo4j name: {identifier}")
     return "`" + identifier.replace("`", "``") + "`"
 
 

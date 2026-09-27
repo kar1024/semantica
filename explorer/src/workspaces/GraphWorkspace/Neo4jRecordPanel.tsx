@@ -62,6 +62,20 @@ async function request<T>(url: string, payload?: unknown): Promise<T> {
 }
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
+
+/** The edited text read back in the stored value's type: text stays text, anything else is JSON of the same kind. */
+function typed(name: string, stored: Value, input: string): Value {
+  if (typeof stored === "string") return input;
+  const kind = Array.isArray(stored) ? "a list" : typeof stored === "number" ? "a number" : "true or false";
+  let value: unknown;
+  try {
+    value = JSON.parse(input);
+  } catch {
+    value = undefined;
+  }
+  if (Array.isArray(stored) ? !Array.isArray(value) : typeof value !== typeof stored) throw new Error(`${name} holds ${kind}, and ${input} is not ${kind}`);
+  return value as Value;
+}
 const keyOf = (id: string) => id.split(":").slice(2).join(":");
 const failure = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -166,7 +180,18 @@ export function Neo4jRecordPanel({ nodeId, storeId, onFocusNode }: { nodeId: str
             <div style={mutedStyle}>{name === record.key ? "key" : "from the vault: edit the note"}</div>
           </div>
         ) : (
-          <form key={name} style={rowStyle} onSubmit={(event) => { event.preventDefault(); void update({ set: { [name]: String(new FormData(event.currentTarget).get("value") ?? "") } }); }}>
+          <form
+            key={name}
+            style={rowStyle}
+            onSubmit={(event) => {
+              event.preventDefault();
+              try {
+                void update({ set: { [name]: typed(name, value, String(new FormData(event.currentTarget).get("value") ?? "")) } });
+              } catch (error) {
+                setNotice({ text: failure(error) });
+              }
+            }}
+          >
             <div style={nameStyle}>{name}</div>
             <input name="value" defaultValue={text(value)} style={inputStyle} disabled={busy} />
             <div style={{ display: "flex", gap: 6 }}>

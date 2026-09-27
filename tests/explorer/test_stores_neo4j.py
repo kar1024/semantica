@@ -22,6 +22,7 @@ from semantica.explorer.authoring_service import _compact_iri
 from semantica.explorer.routes.stores import router
 from semantica.explorer.stores import (
     Stores,
+    _name,
     check_value,
     local_name,
     neo4j_snapshot,
@@ -106,6 +107,13 @@ def test_property_values_are_what_load_vault_writes(value) -> None:
 def test_other_property_values_are_refused(value) -> None:
     with pytest.raises(HTTPException) as info:
         check_value("key", value)
+    assert info.value.status_code == 422
+
+
+def test_names_holding_a_backslash_are_refused() -> None:
+    assert _name("HAS_GROUPING") == "`HAS_GROUPING`"
+    with pytest.raises(HTTPException) as info:
+        _name("LINKS_TO\\u0060")
     assert info.value.status_code == 422
 
 
@@ -366,6 +374,11 @@ OUTSIDE_THE_VOCABULARY = {
         "properties": {"since": 2020},
     },
     "unknown operation": {"operation": "merge_node", "name": "X"},
+    # Cypher decodes \u0060 inside backticks into the closing one, so the rest would run as Cypher.
+    "type that escapes its quoting": {
+        "operation": "delete_relationship", "source": NOTE_ID, "target": STUB_ID,
+        "type": "LINKS_TO\\u0060]->(b) DETACH DELETE b RETURN false AS marked //",
+    },
 }
 
 

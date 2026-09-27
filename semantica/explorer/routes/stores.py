@@ -218,15 +218,16 @@ def mutate(request: Request, identifier: str, body: Annotated[Mutation, Body()])
         )
     elif isinstance(body, DeleteNode):
         result = database.delete_node(body.id, body.base_revision)
-    elif isinstance(body, CreateRelationship):
+    else:
         types = {item["type"]: item["iri"] for item in _vocabulary(stores)["types"]}
         if body.type not in types:
             raise HTTPException(status_code=422, detail=f"Not a relationship type: {body.type}")
-        result = database.create_relationship(
-            body.source, body.type, body.target, types[body.type]
-        )
-    else:
-        result = database.delete_relationship(body.source, body.type, body.target)
+        if isinstance(body, CreateRelationship):
+            result = database.create_relationship(
+                body.source, body.type, body.target, types[body.type]
+            )
+        else:
+            result = database.delete_relationship(body.source, body.type, body.target)
     # The write has committed; re-read the store and rebuild Explore outside any lock.
     reload_stores(request.app, [identifier])
     refresh_session_graph(request.app, request.app.state.session)
