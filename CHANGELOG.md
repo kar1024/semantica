@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its label, links nodes by a UO property or a type Neo4j holds, and creates
   entities as a Stub typed by a UO class. Each write locks its nodes before it
   checks the record's revision, so a loader commit in between answers 409.
+  A relationship type is checked against the vocabulary for a delete as for a
+  create, and a label or type holding a backslash is refused, because Cypher
+  decodes ``` inside backticks into the closing one. A list, number or
+  true/false saved from the inspector keeps its type.
   `stores.json` names the UO store in the new required `neo4j.schema` key.
 - A store that cannot be reached stays out of Explore and carries its error in
   the catalog and its routes; an invalid configuration file stops startup.
